@@ -1,0 +1,100 @@
+syntax = "proto3";
+
+package almacenamiento;
+
+// ===================== NODO DE ALMACENAMIENTO =====================
+// Cada nodo guarda archivos en su propia carpeta y los sirve.
+service NodoAlmacenamiento {
+  // Comprueba que el nodo está vivo (lo usa el coordinador).
+  rpc Ping (SolicitudPing) returns (RespuestaPing);
+  // Sube un archivo en fragmentos (streaming del cliente).
+  rpc SubirArchivo (stream Fragmento) returns (ResultadoSubida);
+  // Descarga un archivo en fragmentos (streaming del servidor).
+  rpc DescargarArchivo (SolicitudArchivo) returns (stream Fragmento);
+  // Devuelve los metadatos de un archivo guardado en el nodo.
+  rpc ConsultarMetadatos (SolicitudArchivo) returns (Metadatos);
+}
+
+// ===================== COORDINADOR =====================
+// Sabe qué nodos están vivos y en qué nodos está cada archivo.
+service Coordinador {
+  // Un nodo se anuncia al arrancar.
+  rpc RegistrarNodo (InfoNodo) returns (RespuestaRegistro);
+  // Indica a qué nodos subir un archivo o desde cuáles descargarlo.
+  rpc UbicarArchivo (SolicitudUbicacion) returns (Ubicacion);
+  // Lista todos los archivos conocidos y sus réplicas.
+  rpc ListarArchivos (Vacio) returns (ListaArchivos);
+}
+
+// ---------- Mensajes del nodo ----------
+message SolicitudPing {
+  string origen = 1;
+}
+
+message RespuestaPing {
+  string nodo_id = 1;
+  int64 archivos_guardados = 2;
+}
+
+message Fragmento {
+  string nombre = 1;   // archivo al que pertenece
+  int32 indice = 2;    // posición del fragmento (0, 1, 2...)
+  bytes datos = 3;     // contenido del fragmento
+}
+
+message SolicitudArchivo {
+  string nombre = 1;
+}
+
+message ResultadoSubida {
+  bool ok = 1;
+  string nodo_id = 2;
+  int64 tamano_bytes = 3;
+  int32 fragmentos = 4;
+  string hash_sha256 = 5;
+}
+
+message Metadatos {
+  string nombre = 1;
+  string nodo_id = 2;
+  int64 tamano_bytes = 3;
+  string hash_sha256 = 4;
+  string fecha_subida = 5;
+}
+
+// ---------- Mensajes del coordinador ----------
+message Vacio {}
+
+message InfoNodo {
+  string nodo_id = 1;     // ej. "nodo1"
+  string direccion = 2;   // ej. "localhost:50051"
+}
+
+message RespuestaRegistro {
+  bool ok = 1;
+  string mensaje = 2;
+}
+
+enum Operacion {
+  SUBIR = 0;
+  DESCARGAR = 1;
+}
+
+message SolicitudUbicacion {
+  string nombre = 1;
+  Operacion operacion = 2;
+}
+
+message Ubicacion {
+  string nombre = 1;
+  repeated InfoNodo nodos = 2;   // nodos en orden de preferencia
+}
+
+message EntradaArchivo {
+  string nombre = 1;
+  repeated string nodos = 2;     // ids de los nodos con réplica
+}
+
+message ListaArchivos {
+  repeated EntradaArchivo archivos = 1;
+}

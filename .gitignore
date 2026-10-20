@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+almacenamiento_pb2.py
+almacenamiento_pb2_grpc.py
+datos_*/
+*.bin
+descargado_*
+copia_*
