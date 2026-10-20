@@ -24,6 +24,8 @@ service Coordinador {
   rpc UbicarArchivo (SolicitudUbicacion) returns (Ubicacion);
   // Lista todos los archivos conocidos y sus réplicas.
   rpc ListarArchivos (Vacio) returns (ListaArchivos);
+    // Devuelve el estado (vivo o caído) de cada nodo registrado.
+  rpc EstadoNodos (Vacio) returns (ListaNodos);
 }
 
 // ---------- Mensajes del nodo ----------
@@ -97,4 +99,14 @@ message EntradaArchivo {
 
 message ListaArchivos {
   repeated EntradaArchivo archivos = 1;
+}
+message EstadoNodo {
+  string nodo_id = 1;
+  string direccion = 2;
+  bool vivo = 3;
+  int32 archivos = 4;            // cuántos archivos tiene asignados
+}
+
+message ListaNodos {
+  repeated EstadoNodo nodos = 1;
 }

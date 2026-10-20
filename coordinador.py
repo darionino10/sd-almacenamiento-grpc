@@ -105,6 +105,13 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
             entradas = [pb.EntradaArchivo(nombre=n, nodos=r) for n, r in self.archivos.items()]
         return pb.ListaArchivos(archivos=entradas)
 
+    def EstadoNodos(self, request, context):
+        with self.candado:
+            nodos = [pb.EstadoNodo(nodo_id=i, direccion=n["direccion"], vivo=n["vivo"],
+                                   archivos=sum(i in r for r in self.archivos.values()))
+                     for i, n in sorted(self.nodos.items())]
+        return pb.ListaNodos(nodos=nodos)
+    
     # ---------- comprobación de salud ----------
     def vigilar_nodos(self):
         """Hace Ping a cada nodo periódicamente y actualiza si está vivo."""
