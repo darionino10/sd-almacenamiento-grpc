@@ -26,6 +26,8 @@ service Coordinador {
   rpc ListarArchivos (Vacio) returns (ListaArchivos);
     // Devuelve el estado (vivo o caído) de cada nodo registrado.
   rpc EstadoNodos (Vacio) returns (ListaNodos);
+    // El cliente informa en qué nodos terminó bien la subida.
+  rpc ConfirmarSubida (ConfirmacionSubida) returns (RespuestaRegistro);
 }
 
 // ---------- Mensajes del nodo ----------
@@ -109,4 +111,10 @@ message EstadoNodo {
 
 message ListaNodos {
   repeated EstadoNodo nodos = 1;
+}
+message ConfirmacionSubida {
+  string nombre = 1;
+  repeated string nodos_ok = 2;  // nodos donde la subida terminó bien
+  string hash_sha256 = 3;
+  int64 tamano_bytes = 4;
 }

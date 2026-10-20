@@ -141,11 +141,12 @@ async function subir() {
   datos.append("archivo", entrada.files[0]);
   try {
     const r = await pedirJSON("/api/subir", { method: "POST", body: datos });
-    for (const res of r.resultados) {
+        for (const res of r.resultados) {
       registrar(res.ok
         ? `${r.nombre} → ${res.nodo}: ${res.fragmentos} fragmento(s), hash ${res.hash_ok ? "OK" : "NO COINCIDE"}`
         : `${r.nombre} → ${res.nodo}: ERROR ${res.error}`, res.ok ? "success" : "danger");
     }
+    registrar(`${r.nombre} confirmado por el coordinador en ${r.confirmados.join(", ")}`, "primary");   // ← nueva
     entrada.value = "";
     actualizar();
   } catch (e) {

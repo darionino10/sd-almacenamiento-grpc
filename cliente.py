@@ -58,10 +58,11 @@ def subir(args):
         sys.exit(f"No existe el archivo local '{args.archivo}'")
     nombre = os.path.basename(args.archivo)
     esperado = hash_local(args.archivo)
+    tamano = os.path.getsize(args.archivo)
     ubicacion = ubicar(args.coordinador, nombre, pb.SUBIR)
     print(f"Coordinador asignó: {', '.join(n.nodo_id for n in ubicacion.nodos)}")
 
-    exitos = 0
+    nodos_ok = []
     for nodo in ubicacion.nodos:
         inicio = time.perf_counter()
         try:
@@ -69,14 +70,24 @@ def subir(args):
                 r = pb_grpc.NodoAlmacenamientoStub(canal).SubirArchivo(
                     generar_fragmentos(args.archivo), timeout=PLAZO_ARCHIVO)
             ms = (time.perf_counter() - inicio) * 1000
-            integro = "OK" if r.hash_sha256 == esperado else "NO COINCIDE"
+            integro = r.hash_sha256 == esperado
             print(f"  -> {r.nodo_id}: {r.tamano_bytes} bytes, {r.fragmentos} fragmento(s), "
-                  f"{ms:.1f} ms, hash {integro}")
-            exitos += 1
+                  f"{ms:.1f} ms, hash {'OK' if integro else 'NO COINCIDE'}")
+            if integro:
+                nodos_ok.append(r.nodo_id)
         except grpc.RpcError as e:
             print(f"  -> {nodo.nodo_id}: ERROR [{e.code().name}] {e.details()}")
-    print(f"Archivo '{nombre}' guardado en {exitos} de {len(ubicacion.nodos)} nodo(s)")
 
+    if not nodos_ok:
+        sys.exit(f"La subida de '{nombre}' falló en todos los nodos; no se registra")
+
+    # Solo ahora el coordinador registra el archivo, con los nodos que sí lo recibieron.
+    with grpc.insecure_channel(args.coordinador) as canal:
+        r = pb_grpc.CoordinadorStub(canal).ConfirmarSubida(
+            pb.ConfirmacionSubida(nombre=nombre, nodos_ok=nodos_ok,
+                                  hash_sha256=esperado, tamano_bytes=tamano),
+            timeout=PLAZO)
+    print(f"Confirmado por el coordinador: {r.mensaje}")
 
 def descargar(args):
     nombre = os.path.basename(args.archivo)

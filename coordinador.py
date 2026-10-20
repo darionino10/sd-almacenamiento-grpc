@@ -32,7 +32,8 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
     def __init__(self):
         self.candado = threading.Lock()
         self.nodos = {}      # nodo_id -> {"direccion": str, "vivo": bool}
-        self.archivos = {}   # nombre -> [nodo_id, nodo_id]
+        self.archivos = {}   # nombre -> [nodo_id, nodo_id] (solo subidas confirmadas)
+        self.pendientes = {} # nombre -> nodos asignados que aún no confirman
         os.makedirs(CARPETA, exist_ok=True)
         self._cargar_indice()
 
@@ -84,9 +85,10 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                 if len(elegidos) < REPLICAS:
                     logging.warning("Solo hay %d nodo(s) vivo(s): '%s' tendrá menos réplicas",
                                     len(elegidos), nombre)
-                self.archivos[nombre] = elegidos
-                self._guardar_indice()
-                logging.info("Subida de '%s' asignada a %s", nombre, elegidos)
+                # Aún no se registra: se espera a que el cliente confirme la subida.
+                self.pendientes[nombre] = elegidos
+                logging.info("Subida de '%s' asignada a %s (pendiente de confirmar)",
+                             nombre, elegidos)
                 return pb.Ubicacion(nombre=nombre, nodos=[self._info(i) for i in elegidos])
 
             # DESCARGAR
@@ -100,6 +102,30 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
             return pb.Ubicacion(nombre=nombre,
                                 nodos=[self._info(i) for i in ordenados if i in self.nodos])
 
+    def ConfirmarSubida(self, request, context):
+        nombre = os.path.basename(request.nombre)
+        with self.candado:
+            asignados = self.pendientes.pop(nombre, None)
+            if asignados is None:
+                context.abort(grpc.StatusCode.FAILED_PRECONDITION,
+                              f"No hay una subida pendiente para '{nombre}'")
+            # Solo cuentan los nodos que el coordinador asignó y que el cliente confirma.
+            confirmados = [i for i in request.nodos_ok if i in asignados]
+            if not confirmados:
+                context.abort(grpc.StatusCode.INVALID_ARGUMENT,
+                              f"La subida de '{nombre}' no se completó en ningún nodo")
+            self.archivos[nombre] = confirmados
+            self._guardar_indice()
+        fallidos = [i for i in asignados if i not in confirmados]
+        if fallidos:
+            logging.warning("Subida de '%s' confirmada solo en %s (falló en %s)",
+                            nombre, confirmados, fallidos)
+        else:
+            logging.info("Subida de '%s' confirmada en %s (%d bytes)",
+                         nombre, confirmados, request.tamano_bytes)
+        return pb.RespuestaRegistro(
+            ok=True, mensaje=f"'{nombre}' registrado en {', '.join(confirmados)}")
+
     def ListarArchivos(self, request, context):
         with self.candado:
             entradas = [pb.EntradaArchivo(nombre=n, nodos=r) for n, r in self.archivos.items()]
@@ -111,7 +137,7 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                                    archivos=sum(i in r for r in self.archivos.values()))
                      for i, n in sorted(self.nodos.items())]
         return pb.ListaNodos(nodos=nodos)
-    
+
     # ---------- comprobación de salud ----------
     def vigilar_nodos(self):
         """Hace Ping a cada nodo periódicamente y actualiza si está vivo."""

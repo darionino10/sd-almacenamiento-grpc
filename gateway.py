@@ -81,9 +81,11 @@ def subir(archivo: UploadFile = File(...)):
 
     # Hash local para comprobar la integridad en cada nodo
     sha = hashlib.sha256()
+    tamano = 0
     archivo.file.seek(0)
     while bloque := archivo.file.read(TAMANO_FRAGMENTO):
         sha.update(bloque)
+        tamano += len(bloque)
     esperado = sha.hexdigest()
 
     try:
@@ -110,8 +112,20 @@ def subir(archivo: UploadFile = File(...)):
                                "hash_ok": r.hash_sha256 == esperado})
         except grpc.RpcError as e:
             resultados.append({"nodo": nodo.nodo_id, "ok": False, "error": e.code().name})
-    return {"nombre": nombre, "sha256": esperado, "resultados": resultados}
 
+    # Confirmar al coordinador solo los nodos que recibieron el archivo íntegro
+    nodos_ok = [r["nodo"] for r in resultados if r["ok"] and r["hash_ok"]]
+    if not nodos_ok:
+        raise HTTPException(503, f"La subida de '{nombre}' falló en todos los nodos")
+    try:
+        coordinador().ConfirmarSubida(
+            pb.ConfirmacionSubida(nombre=nombre, nodos_ok=nodos_ok,
+                                  hash_sha256=esperado, tamano_bytes=tamano),
+            timeout=PLAZO)
+    except grpc.RpcError as e:
+        raise error_http(e)
+    return {"nombre": nombre, "sha256": esperado, "resultados": resultados,
+            "confirmados": nodos_ok}
 
 @app.get("/api/info/{nombre}")
 def info(nombre: str):
