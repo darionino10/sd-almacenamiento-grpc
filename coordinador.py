@@ -126,6 +126,40 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
         return pb.RespuestaRegistro(
             ok=True, mensaje=f"'{nombre}' registrado en {', '.join(confirmados)}")
 
+    def EliminarArchivo(self, request, context):
+        nombre = os.path.basename(request.nombre)
+        with self.candado:
+            if nombre not in self.archivos:
+                context.abort(grpc.StatusCode.NOT_FOUND,
+                              f"El coordinador no conoce el archivo '{nombre}'")
+            replicas = [(i, self.nodos[i]["direccion"]) for i in self.archivos[nombre]
+                        if i in self.nodos]
+
+        # Se pide a cada nodo que borre su copia (fuera del candado: son llamadas de red).
+        eliminados, fallidos = [], []
+        for nodo_id, direccion in replicas:
+            try:
+                with grpc.insecure_channel(direccion) as canal:
+                    pb_grpc.NodoAlmacenamientoStub(canal).EliminarArchivo(
+                        pb.SolicitudArchivo(nombre=nombre), timeout=5)
+                eliminados.append(nodo_id)
+            except grpc.RpcError as e:
+                if e.code() == grpc.StatusCode.NOT_FOUND:
+                    eliminados.append(nodo_id)   # el nodo ya no lo tenía
+                else:
+                    fallidos.append(nodo_id)
+
+        with self.candado:
+            self.archivos.pop(nombre, None)
+            self._guardar_indice()
+        if fallidos:
+            logging.warning("Archivo '%s' eliminado de %s; quedó una copia huérfana en %s "
+                            "(nodo no disponible)", nombre, eliminados, fallidos)
+        else:
+            logging.info("Archivo '%s' eliminado de %s", nombre, eliminados)
+        return pb.ResultadoEliminacion(nombre=nombre, nodos_eliminados=eliminados,
+                                       nodos_fallidos=fallidos)
+
     def ListarArchivos(self, request, context):
         with self.candado:
             entradas = [pb.EntradaArchivo(nombre=n, nodos=r) for n, r in self.archivos.items()]

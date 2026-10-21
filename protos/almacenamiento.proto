@@ -13,6 +13,8 @@ service NodoAlmacenamiento {
   rpc DescargarArchivo (SolicitudArchivo) returns (stream Fragmento);
   // Devuelve los metadatos de un archivo guardado en el nodo.
   rpc ConsultarMetadatos (SolicitudArchivo) returns (Metadatos);
+    // Borra el archivo y sus metadatos del nodo.
+  rpc EliminarArchivo (SolicitudArchivo) returns (RespuestaRegistro);
 }
 
 // ===================== COORDINADOR =====================
@@ -28,6 +30,8 @@ service Coordinador {
   rpc EstadoNodos (Vacio) returns (ListaNodos);
     // El cliente informa en qué nodos terminó bien la subida.
   rpc ConfirmarSubida (ConfirmacionSubida) returns (RespuestaRegistro);
+    // Elimina un archivo de todas sus réplicas y del índice.
+  rpc EliminarArchivo (SolicitudArchivo) returns (ResultadoEliminacion);
 }
 
 // ---------- Mensajes del nodo ----------
@@ -117,4 +121,9 @@ message ConfirmacionSubida {
   repeated string nodos_ok = 2;  // nodos donde la subida terminó bien
   string hash_sha256 = 3;
   int64 tamano_bytes = 4;
+}
+message ResultadoEliminacion {
+  string nombre = 1;
+  repeated string nodos_eliminados = 2;  // réplicas borradas
+  repeated string nodos_fallidos = 3;    // réplicas que no se pudieron borrar (nodo caído)
 }

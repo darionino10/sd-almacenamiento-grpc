@@ -113,6 +113,19 @@ class NodoServicer(pb_grpc.NodoAlmacenamientoServicer):
                           f"El archivo '{nombre}' no existe en {self.nodo_id}")
         return pb.Metadatos(nombre=nombre, nodo_id=self.nodo_id, **meta)
 
+    def EliminarArchivo(self, request, context):
+        nombre = self._nombre_seguro(request.nombre)
+        with self.candado:
+            if nombre not in self.metadatos:
+                context.abort(grpc.StatusCode.NOT_FOUND,
+                              f"El archivo '{nombre}' no existe en {self.nodo_id}")
+            ruta = os.path.join(self.carpeta, nombre)
+            if os.path.exists(ruta):
+                os.remove(ruta)
+            del self.metadatos[nombre]
+            self._guardar_metadatos()
+        logging.info("Archivo '%s' eliminado", nombre)
+        return pb.RespuestaRegistro(ok=True, mensaje=f"'{nombre}' eliminado de {self.nodo_id}")
 
 def registrar_en_coordinador(coordinador, nodo_id, direccion):
     """Avisa al coordinador que este nodo está disponible."""

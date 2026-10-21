@@ -71,6 +71,15 @@ def listar_archivos():
         raise error_http(e)
     return [{"nombre": a.nombre, "replicas": list(a.nodos)} for a in r.archivos]
 
+@app.delete("/api/archivos/{nombre}")
+def eliminar(nombre: str):
+    """Elimina el archivo de todas sus réplicas y del índice del coordinador."""
+    try:
+        r = coordinador().EliminarArchivo(pb.SolicitudArchivo(nombre=nombre), timeout=PLAZO * 3)
+    except grpc.RpcError as e:
+        raise error_http(e)
+    return {"nombre": r.nombre, "eliminados": list(r.nodos_eliminados),
+            "fallidos": list(r.nodos_fallidos)}
 
 @app.post("/api/subir")
 def subir(archivo: UploadFile = File(...)):

@@ -135,6 +135,14 @@ def info(args):
         except grpc.RpcError as e:
             print(f"{nodo.nodo_id}: ERROR [{e.code().name}] {e.details()}")
 
+def eliminar(args):
+    nombre = os.path.basename(args.archivo)
+    with grpc.insecure_channel(args.coordinador) as canal:
+        r = pb_grpc.CoordinadorStub(canal).EliminarArchivo(
+            pb.SolicitudArchivo(nombre=nombre), timeout=PLAZO * 3)
+    print(f"'{r.nombre}' eliminado de: {', '.join(r.nodos_eliminados) or 'ningún nodo'}")
+    if r.nodos_fallidos:
+        print(f"  No se pudo borrar en {', '.join(r.nodos_fallidos)} (nodo no disponible)")
 
 def listar(args):
     with grpc.insecure_channel(args.coordinador) as canal:
@@ -160,18 +168,18 @@ def main():
     p = sub.add_parser("subir"); p.add_argument("archivo")
     p = sub.add_parser("descargar"); p.add_argument("archivo"); p.add_argument("--destino")
     p = sub.add_parser("info"); p.add_argument("archivo")
+    p = sub.add_parser("eliminar"); p.add_argument("archivo")
     sub.add_parser("listar")
     p = sub.add_parser("ping"); p.add_argument("nodo", help="host:puerto del nodo")
     args = parser.parse_args()
 
     acciones = {"subir": subir, "descargar": descargar, "info": info,
-                "listar": listar, "ping": ping}
+                "eliminar": eliminar, "listar": listar, "ping": ping}
     try:
         acciones[args.comando](args)
     except grpc.RpcError as e:
         # Errores del coordinador o del nodo: se muestra el código de estado gRPC
         sys.exit(f"ERROR gRPC [{e.code().name}]: {e.details()}")
-
 
 if __name__ == "__main__":
     main()

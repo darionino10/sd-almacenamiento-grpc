@@ -127,6 +127,7 @@ async function cargarArchivos() {
         <td class="text-end">
           <button class="btn btn-sm btn-outline-secondary me-1" onclick="verInfo('${a.nombre}')">Info</button>
           <button class="btn btn-sm btn-success" onclick="descargar('${a.nombre}')">Descargar</button>
+          <button class="btn btn-sm btn-outline-danger ms-1" onclick="eliminar('${a.nombre}')">Eliminar</button>
         </td>
       </tr>`).join("");
   } catch (e) {
@@ -169,6 +170,19 @@ async function descargar(nombre) {
     registrar(`${nombre} descargado desde ${r.headers.get("X-Nodo-Origen")}`, "success");
   } catch (e) {
     registrar(`Error al descargar ${nombre}: ${e.message}`, "danger");
+  }
+}
+
+async function eliminar(nombre) {
+  if (!confirm(`¿Eliminar "${nombre}" de todas sus réplicas?`)) return;
+  try {
+    const r = await pedirJSON(`/api/archivos/${encodeURIComponent(nombre)}`, { method: "DELETE" });
+    registrar(`${r.nombre} eliminado de ${r.eliminados.join(", ") || "ningún nodo"}`, "primary");
+    if (r.fallidos.length)
+      registrar(`${r.nombre}: no se pudo borrar en ${r.fallidos.join(", ")} (nodo caído)`, "warning");
+    actualizar();
+  } catch (e) {
+    registrar(`Error al eliminar ${nombre}: ${e.message}`, "danger");
   }
 }
 
