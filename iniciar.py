@@ -42,14 +42,19 @@ def imprimir(nombre, texto):
         print(f"{colores.get(nombre, '')}{nombre:<12}{RESET}| {texto}", flush=True)
 
 
+# Líneas repetitivas que se ocultan para no llenar la terminal
+RUIDO = (
+    "Ping recibido desde coordinador",   # chequeo de salud cada 5 s
+    '"GET /api/nodos ',                  # el panel consulta cada 2 s
+    '"GET /api/archivos ',
+)
 def reenviar_salida(nombre, proceso):
     """Lee la salida de un proceso y la muestra con su nombre y color."""
     for linea in iter(proceso.stdout.readline, ""):
-        if not mostrar_pings and "Ping recibido desde coordinador" in linea:
+        if not mostrar_pings and any(texto in linea for texto in RUIDO):
             continue
         imprimir(nombre, linea.rstrip())
     imprimir(nombre, f"(proceso terminado, código {proceso.wait()})")
-
 
 def lanzar(nombre):
     entorno = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
@@ -100,8 +105,8 @@ def atender_ordenes():
             for nombre, proceso in procesos.items():
                 estado = "corriendo" if proceso.poll() is None else "detenido"
                 imprimir("sistema", f"{nombre}: {estado}")
-        elif orden in ("parar", "iniciar") and objetivo in comandos:
-            if orden == "parar":
+        elif orden in ("detener", "iniciar") and objetivo in comandos:
+            if orden == "detener":
                 imprimir("sistema", f"Deteniendo {objetivo}…")
                 detener(objetivo)
             elif procesos[objetivo].poll() is None:
@@ -110,7 +115,7 @@ def atender_ordenes():
                 imprimir("sistema", f"Iniciando {objetivo}…")
                 lanzar(objetivo)
         else:
-            imprimir("sistema", "Órdenes: parar <nombre>, iniciar <nombre>, estado, salir")
+            imprimir("sistema", "Órdenes: detener <nombre>, iniciar <nombre>, estado, salir")
 
 
 def main():
@@ -150,7 +155,7 @@ def main():
             lanzar("gateway")
             if esperar_puerto(PUERTO_WEB):
                 imprimir("sistema", f"Panel web en http://localhost:{PUERTO_WEB}")
-        imprimir("sistema", "Sistema iniciado. Órdenes: parar <nodo>, iniciar <nodo>, "
+        imprimir("sistema", "Sistema iniciado. Órdenes: detener <nodo>, iniciar <nodo>, "
                             "estado, salir (o Ctrl+C)")
         atender_ordenes()
     except KeyboardInterrupt:
@@ -159,8 +164,8 @@ def main():
         imprimir("sistema", "Deteniendo todo…")
         detener_todo()
         time.sleep(0.3)
-        imprimir("sistema", "Listo")
-
+    imprimir("sistema", "Listo")
+    
 
 if __name__ == "__main__":
     main()
