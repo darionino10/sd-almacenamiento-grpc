@@ -13,6 +13,7 @@ import os
 import grpc
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response, StreamingResponse
+from pydantic import BaseModel, Field
 
 import almacenamiento_pb2 as pb
 import almacenamiento_pb2_grpc as pb_grpc
@@ -29,8 +30,72 @@ CODIGOS_HTTP = {
     grpc.StatusCode.DEADLINE_EXCEEDED: 504,
 }
 
-app = FastAPI(title="Almacenamiento distribuido con gRPC",
-              description="Gateway HTTP que traduce cada petición a llamadas gRPC")
+app = FastAPI(
+    title="Almacenamiento distribuido con gRPC",
+    description=("Gateway HTTP del sistema. Cada petición se traduce a llamadas gRPC al "
+                 "coordinador y a los nodos de almacenamiento. Los códigos de error de gRPC "
+                 "se convierten a HTTP: NOT_FOUND → 404, UNAVAILABLE → 503, "
+                 "DEADLINE_EXCEEDED → 504."),
+    version="1.0.0",
+    openapi_tags=[
+        {"name": "Nodos", "description": "Estado de los nodos de almacenamiento"},
+        {"name": "Archivos", "description": "Subir, consultar, descargar y eliminar archivos"},
+    ],
+)
+
+
+# ---------------- modelos de respuesta (documentación de /docs) ----------------
+class Error(BaseModel):
+    detail: str = Field(examples=["[NOT_FOUND] El coordinador no conoce el archivo 'x.pdf'"])
+
+
+class Nodo(BaseModel):
+    id: str = Field(examples=["nodo1"])
+    direccion: str = Field(examples=["100.123.23.123:50051"])
+    vivo: bool
+    archivos: int = Field(description="archivos asignados al nodo")
+
+
+class Archivo(BaseModel):
+    nombre: str
+    replicas: list[str] = Field(examples=[["nodo1", "nodo2"]])
+
+
+class ResultadoNodo(BaseModel):
+    nodo: str
+    ok: bool
+    bytes: int | None = None
+    fragmentos: int | None = None
+    hash_ok: bool | None = None
+    error: str | None = Field(None, examples=["UNAVAILABLE"])
+
+
+class ResultadoSubida(BaseModel):
+    nombre: str
+    sha256: str
+    resultados: list[ResultadoNodo]
+    confirmados: list[str] = Field(description="nodos donde el coordinador registró la réplica")
+
+
+class Replica(BaseModel):
+    nodo: str
+    bytes: int | None = None
+    sha256: str | None = None
+    fecha: str | None = None
+    error: str | None = None
+
+
+class ResultadoEliminacion(BaseModel):
+    nombre: str
+    eliminados: list[str]
+    fallidos: list[str] = Field(description="nodos caídos donde quedó una copia sin borrar")
+
+
+# Respuestas de error comunes, para que /docs las muestre en cada endpoint
+NO_ENCONTRADO = {404: {"model": Error, "description": "El archivo no existe (gRPC NOT_FOUND)"}}
+NO_DISPONIBLE = {503: {"model": Error, "description": "Coordinador o nodos no disponibles "
+                                                      "(gRPC UNAVAILABLE)"},
+                 504: {"model": Error, "description": "Se agotó el plazo (gRPC DEADLINE_EXCEEDED)"}}
 
 
 def error_http(e: grpc.RpcError):
@@ -55,7 +120,9 @@ def sin_icono():
     return Response(status_code=204)
 
 # ---------------- API ----------------
-@app.get("/api/nodos")
+@app.get("/api/nodos", tags=["Nodos"], response_model=list[Nodo], responses=NO_DISPONIBLE,
+         summary="Estado de los nodos")
+
 def estado_nodos():
     """Estado de cada nodo según el coordinador."""
     try:
@@ -66,7 +133,9 @@ def estado_nodos():
              "archivos": n.archivos} for n in r.nodos]
 
 
-@app.get("/api/archivos")
+@app.get("/api/archivos", tags=["Archivos"], response_model=list[Archivo],
+         responses=NO_DISPONIBLE, summary="Listar archivos y réplicas")
+
 def listar_archivos():
     """Archivos registrados en el coordinador y sus réplicas."""
     try:
@@ -75,7 +144,9 @@ def listar_archivos():
         raise error_http(e)
     return [{"nombre": a.nombre, "replicas": list(a.nodos)} for a in r.archivos]
 
-@app.delete("/api/archivos/{nombre}")
+@app.delete("/api/archivos/{nombre}", tags=["Archivos"], response_model=ResultadoEliminacion,
+            responses={**NO_ENCONTRADO, **NO_DISPONIBLE}, summary="Eliminar un archivo")
+
 def eliminar(nombre: str):
     """Elimina el archivo de todas sus réplicas y del índice del coordinador."""
     try:
@@ -85,7 +156,11 @@ def eliminar(nombre: str):
     return {"nombre": r.nombre, "eliminados": list(r.nodos_eliminados),
             "fallidos": list(r.nodos_fallidos)}
 
-@app.post("/api/subir")
+@app.post("/api/subir", tags=["Archivos"], response_model=ResultadoSubida,
+          responses={400: {"model": Error, "description": "El archivo no tiene nombre"},
+                     **NO_DISPONIBLE},
+          summary="Subir un archivo a dos réplicas")
+
 def subir(archivo: UploadFile = File(...)):
     """Sube un archivo a los nodos que asigne el coordinador (streaming gRPC)."""
     nombre = os.path.basename(archivo.filename or "")
@@ -140,7 +215,9 @@ def subir(archivo: UploadFile = File(...)):
     return {"nombre": nombre, "sha256": esperado, "resultados": resultados,
             "confirmados": nodos_ok}
 
-@app.get("/api/info/{nombre}")
+@app.get("/api/info/{nombre}", tags=["Archivos"], response_model=list[Replica],
+         responses={**NO_ENCONTRADO, **NO_DISPONIBLE}, summary="Metadatos en cada réplica")
+
 def info(nombre: str):
     """Metadatos del archivo en cada una de sus réplicas."""
     try:
@@ -161,7 +238,14 @@ def info(nombre: str):
     return respuesta
 
 
-@app.get("/api/descargar/{nombre}")
+@app.get("/api/descargar/{nombre}", tags=["Archivos"],
+         responses={200: {"content": {"application/octet-stream": {}},
+                          "description": "Contenido del archivo. La cabecera X-Nodo-Origen "
+                                         "indica la réplica usada y X-Nodos-Fallidos las que "
+                                         "no respondieron."},
+                    **NO_ENCONTRADO, **NO_DISPONIBLE},
+         summary="Descargar desde la primera réplica disponible")
+
 def descargar(nombre: str):
     """Descarga desde la primera réplica disponible; si una falla, prueba la siguiente."""
     try:
