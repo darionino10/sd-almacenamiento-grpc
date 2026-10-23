@@ -12,16 +12,15 @@ import os
 
 import grpc
 from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 import almacenamiento_pb2 as pb
 import almacenamiento_pb2_grpc as pb_grpc
+import config
+from config import PLAZO, PLAZO_ARCHIVO, TAMANO_FRAGMENTO
 
-COORDINADOR = os.environ.get("COORDINADOR", "localhost:50050")
-TAMANO_FRAGMENTO = 64 * 1024
-PLAZO = 5
-PLAZO_ARCHIVO = 30
-
+# El gateway corre en el mismo equipo que el coordinador
+COORDINADOR = f"localhost:{config.PUERTO_COORDINADOR}"
 # Traducción de códigos gRPC a códigos HTTP
 CODIGOS_HTTP = {
     grpc.StatusCode.NOT_FOUND: 404,
@@ -49,6 +48,11 @@ def coordinador():
 def inicio():
     return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
 
+@app.get("/favicon.ico", include_in_schema=False)
+@app.get("/apple-touch-icon.png", include_in_schema=False)
+@app.get("/apple-touch-icon-precomposed.png", include_in_schema=False)
+def sin_icono():
+    return Response(status_code=204)
 
 # ---------------- API ----------------
 @app.get("/api/nodos")

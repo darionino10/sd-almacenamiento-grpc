@@ -20,9 +20,8 @@ import grpc
 
 import almacenamiento_pb2 as pb
 import almacenamiento_pb2_grpc as pb_grpc
-
-REPLICAS = 2               # cada archivo se guarda en dos nodos
-INTERVALO_SALUD = 5        # segundos entre comprobaciones de los nodos
+import config
+from config import INTERVALO_SALUD, PLAZO_PING, REPLICAS
 CARPETA = "datos_coordinador"
 RUTA_INDICE = os.path.join(CARPETA, "indice.json")
 
@@ -141,7 +140,7 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
             try:
                 with grpc.insecure_channel(direccion) as canal:
                     pb_grpc.NodoAlmacenamientoStub(canal).EliminarArchivo(
-                        pb.SolicitudArchivo(nombre=nombre), timeout=5)
+                            pb.SolicitudArchivo(nombre=nombre), timeout=config.PLAZO)
                 eliminados.append(nodo_id)
             except grpc.RpcError as e:
                 if e.code() == grpc.StatusCode.NOT_FOUND:
@@ -182,7 +181,7 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                 try:
                     with grpc.insecure_channel(nodo["direccion"]) as canal:
                         pb_grpc.NodoAlmacenamientoStub(canal).Ping(
-                            pb.SolicitudPing(origen="coordinador"), timeout=2)
+                                pb.SolicitudPing(origen="coordinador"), timeout=PLAZO_PING)
                     vivo = True
                 except grpc.RpcError:
                     vivo = False
@@ -196,7 +195,7 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
 
 def main():
     parser = argparse.ArgumentParser(description="Coordinador gRPC")
-    parser.add_argument("--puerto", type=int, default=50050)
+    parser.add_argument("--puerto", type=int, default=config.PUERTO_COORDINADOR)
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [coordinador] %(message)s")

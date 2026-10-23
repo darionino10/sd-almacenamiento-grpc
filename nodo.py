@@ -19,8 +19,8 @@ import grpc
 
 import almacenamiento_pb2 as pb
 import almacenamiento_pb2_grpc as pb_grpc
-
-TAMANO_FRAGMENTO = 64 * 1024  # 64 KB por fragmento
+import config
+from config import TAMANO_FRAGMENTO
 
 
 class NodoServicer(pb_grpc.NodoAlmacenamientoServicer):
@@ -133,7 +133,7 @@ def registrar_en_coordinador(coordinador, nodo_id, direccion):
         with grpc.insecure_channel(coordinador) as canal:
             stub = pb_grpc.CoordinadorStub(canal)
             r = stub.RegistrarNodo(pb.InfoNodo(nodo_id=nodo_id, direccion=direccion),
-                                   timeout=3)
+                                   timeout=config.PLAZO)
             logging.info("Registrado en el coordinador: %s", r.mensaje)
     except grpc.RpcError as e:
         logging.warning("No se pudo registrar en el coordinador %s (%s). "
@@ -144,12 +144,15 @@ def registrar_en_coordinador(coordinador, nodo_id, direccion):
 def main():
     parser = argparse.ArgumentParser(description="Nodo de almacenamiento gRPC")
     parser.add_argument("--id", default="nodo1", help="identificador del nodo")
-    parser.add_argument("--puerto", type=int, default=50051)
-    parser.add_argument("--host", default="localhost",
+    parser.add_argument("--puerto", type=int, default=None,
+                        help="puerto del nodo (por defecto según su id: nodo2 -> 50052)")
+    parser.add_argument("--host", default=config.IP_PROPIA,
                         help="dirección con la que otros contactan a este nodo")
-    parser.add_argument("--coordinador", default="localhost:50050",
+    parser.add_argument("--coordinador", default=config.COORDINADOR,
                         help="host:puerto del coordinador")
     args = parser.parse_args()
+    if args.puerto is None:
+        args.puerto = config.puerto_de_nodo(args.id)
 
     logging.basicConfig(level=logging.INFO,
                         format=f"%(asctime)s [{args.id}] %(message)s")
@@ -164,7 +167,6 @@ def main():
 
     registrar_en_coordinador(args.coordinador, args.id, f"{args.host}:{args.puerto}")
     servidor.wait_for_termination()
-
 
 if __name__ == "__main__":
     main()

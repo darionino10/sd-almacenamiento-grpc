@@ -20,11 +20,8 @@ import grpc
 
 import almacenamiento_pb2 as pb
 import almacenamiento_pb2_grpc as pb_grpc
-
-TAMANO_FRAGMENTO = 64 * 1024
-PLAZO = 5            # deadline (segundos) para llamadas cortas
-PLAZO_ARCHIVO = 30   # deadline para subir o descargar
-
+import config
+from config import PLAZO, PLAZO_ARCHIVO, TAMANO_FRAGMENTO
 
 def generar_fragmentos(ruta):
     """Lee el archivo por bloques y produce mensajes Fragmento (streaming)."""
@@ -162,7 +159,7 @@ def ping(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Cliente de almacenamiento distribuido")
-    parser.add_argument("--coordinador", default="localhost:50050",
+    parser.add_argument("--coordinador", default=config.COORDINADOR,
                         help="host:puerto del coordinador")
     sub = parser.add_subparsers(dest="comando", required=True)
     p = sub.add_parser("subir"); p.add_argument("archivo")
