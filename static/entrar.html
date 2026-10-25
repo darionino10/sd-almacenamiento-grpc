@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Entrar · Almacenamiento distribuido</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@700;800&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --noche: #040a1c;
+      --panel: #071433;
+      --neon: #2f7dff;
+      --neon-suave: rgba(47, 125, 255, 0.35);
+      --hielo: #d9e6ff;
+      --bruma: #7d93c4;
+      --caido: #ff4560;
+      --display: "Unbounded", "Arial Black", system-ui, sans-serif;
+      --texto: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      --brillo: 0 0 0 1px rgba(80, 150, 255, 0.55), 0 0 22px rgba(40, 110, 255, 0.28),
+                inset 0 0 28px rgba(40, 110, 255, 0.07);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      min-height: 100vh; display: grid; place-items: center; padding: 32px 18px;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(47, 125, 255, 0.22), transparent 70%),
+        repeating-linear-gradient(90deg, rgba(47, 125, 255, 0.05) 0 1px, transparent 1px 160px),
+        var(--noche);
+      color: var(--hielo); font-family: var(--texto); font-size: 15px; line-height: 1.5;
+    }
+    button, input { font: inherit; }
+    :focus-visible { outline: 2px solid #8fb6ff; outline-offset: 3px; }
+
+    .contenedor { width: min(420px, 100%); }
+    h1 { margin: 0 0 6px; text-align: center; font-family: var(--display); font-weight: 800;
+         font-size: clamp(22px, 6vw, 32px); line-height: 1.15;
+         text-shadow: 0 0 28px rgba(47, 125, 255, 0.45); }
+    .sub { margin: 0 0 26px; text-align: center; color: var(--bruma); }
+
+    .marco { border-radius: 6px; box-shadow: var(--brillo);
+             background: linear-gradient(180deg, rgba(10, 30, 75, 0.75), rgba(7, 20, 51, 0.85)); }
+    .pestanas { display: grid; grid-template-columns: 1fr 1fr; border-bottom: 1px solid var(--neon-suave); }
+    .pestana { padding: 13px; cursor: pointer; font-weight: 600; color: var(--bruma);
+               background: transparent; border: none; border-bottom: 2px solid transparent; }
+    .pestana[aria-selected="true"] { color: #fff; border-bottom-color: var(--neon);
+                                     background: rgba(47, 125, 255, 0.1); }
+    form { padding: 22px; }
+    form[hidden] { display: none; }
+    label { display: block; margin: 0 0 14px; font-weight: 500; font-size: 14px; color: #a9c6ff; }
+    input {
+      display: block; width: 100%; margin-top: 6px; padding: 11px 12px; border-radius: 5px;
+      color: #fff; background: rgba(4, 10, 28, 0.7); border: 1px solid rgba(110, 160, 255, 0.45);
+    }
+    input:focus { outline: none; border-color: #8fb6ff; box-shadow: 0 0 0 3px rgba(47, 125, 255, 0.25); }
+    .ayuda { display: block; margin-top: 4px; font-size: 12px; font-weight: 400; color: var(--bruma); }
+    .error { min-height: 22px; margin: 0 0 10px; font-size: 14px; color: #ff9aaa; }
+    .error.exito { color: #8ff0bf; }
+    .requisitos { list-style: none; margin: -4px 0 14px; padding: 0; display: grid;
+                  grid-template-columns: 1fr 1fr; gap: 4px 12px; font-size: 13px; color: var(--bruma); }
+    .requisitos li::before { content: "○"; display: inline-block; width: 18px; color: var(--bruma); }
+    .requisitos li.cumple { color: #8ff0bf; }
+    .requisitos li.cumple::before { content: "●"; color: #17c47a; }
+    .boton {
+      width: 100%; padding: 12px; border-radius: 5px; cursor: pointer; font-weight: 600; color: #fff;
+      background: linear-gradient(180deg, #3d8bff, #1f5fe0); border: none;
+      box-shadow: 0 0 0 1px #5d9bff, 0 0 18px rgba(47, 125, 255, 0.45);
+    }
+    .boton:hover { background: linear-gradient(180deg, #5299ff, #2a6cf0); }
+    .boton:disabled { opacity: 0.55; cursor: wait; }
+  </style>
+</head>
+<body>
+<main class="contenedor">
+  <h1>Almacenamiento distribuido</h1>
+  <p class="sub">Entra para subir y consultar tus archivos</p>
+
+  <section class="marco">
+    <div class="pestanas" role="tablist">
+      <button class="pestana" role="tab" id="tabEntrar" aria-selected="true" aria-controls="formEntrar">Iniciar sesión</button>
+      <button class="pestana" role="tab" id="tabCrear" aria-selected="false" aria-controls="formCrear">Crear cuenta</button>
+    </div>
+
+    <form id="formEntrar" role="tabpanel" aria-labelledby="tabEntrar">
+      <label>Usuario
+        <input name="usuario" autocomplete="username" required autofocus>
+      </label>
+      <label>Contraseña
+        <input name="contrasena" type="password" autocomplete="current-password" required>
+      </label>
+      <p class="error" role="alert"></p>
+      <button class="boton" type="submit">Iniciar sesión</button>
+    </form>
+
+    <form id="formCrear" role="tabpanel" aria-labelledby="tabCrear" hidden>
+      <label>Usuario
+        <input name="usuario" id="usuarioNuevo" autocomplete="username" required maxlength="43"
+               placeholder="senendarionino10">
+        <span class="ayuda">Tus nombres y apellidos todo pegado, solo letras sin tildes. Si quieres,
+          agrega al final un número del 1 al 100.</span>
+      </label>
+      <label>Contraseña
+        <input name="contrasena" id="claveNueva" type="password" autocomplete="new-password" required>
+      </label>
+      <ul class="requisitos" id="requisitos" aria-live="polite">
+        <li data-regla="largo">8 caracteres o más</li>
+        <li data-regla="mayus">Una mayúscula</li>
+        <li data-regla="minus">Una minúscula</li>
+        <li data-regla="numero">Un número</li>
+      </ul>
+      <label>Repite la contraseña
+        <input name="repetir" type="password" autocomplete="new-password" minlength="8" required>
+      </label>
+      <p class="error" role="alert"></p>
+      <button class="boton" type="submit">Crear cuenta</button>
+    </form>
+  </section>
+</main>
+
+<script>
+const tabs = { entrar: document.getElementById("tabEntrar"), crear: document.getElementById("tabCrear") };
+const forms = { entrar: document.getElementById("formEntrar"), crear: document.getElementById("formCrear") };
+
+function mostrar(cual) {
+  for (const k of ["entrar", "crear"]) {
+    tabs[k].setAttribute("aria-selected", k === cual);
+    forms[k].hidden = k !== cual;
+  }
+  forms[cual].querySelector("input").focus();
+}
+tabs.entrar.addEventListener("click", () => mostrar("entrar"));
+tabs.crear.addEventListener("click", () => mostrar("crear"));
+
+async function enviar(form, url, cuerpo, textoBoton, alTerminar) {
+  const error = form.querySelector(".error");
+  const boton = form.querySelector("button[type=submit]");
+  error.textContent = "";
+  error.classList.remove("exito");
+  boton.disabled = true;
+  boton.textContent = "Un momento…";
+  try {
+    const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                                 body: JSON.stringify(cuerpo) });
+    if (r.ok) {
+      boton.disabled = false;
+      boton.textContent = textoBoton;
+      alTerminar(await r.json().catch(() => ({})));
+      return;
+    }
+    const datos = await r.json().catch(() => ({}));
+    error.textContent = typeof datos.detail === "string" ? datos.detail : "Revisa los datos e intenta de nuevo";
+  } catch {
+    error.textContent = "No hay conexión con el servidor. Intenta de nuevo en unos segundos.";
+  }
+  boton.disabled = false;
+  boton.textContent = textoBoton;
+}
+
+forms.entrar.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const d = new FormData(forms.entrar);
+  enviar(forms.entrar, "/api/sesion", { usuario: d.get("usuario"), contrasena: d.get("contrasena") },
+         "Iniciar sesión", () => { location.href = "/"; });
+});
+
+// Usuario: solo letras sin tildes y números; se guarda en minúsculas
+const PATRON_USUARIO = /^[a-z]{4,40}([1-9][0-9]?|100)?$/;
+const usuarioNuevo = document.getElementById("usuarioNuevo");
+usuarioNuevo.addEventListener("input", () => {
+  usuarioNuevo.value = usuarioNuevo.value.toLowerCase().replace(/[^a-z0-9]/g, "");
+});
+
+// Contraseña: se marcan los requisitos a medida que se escribe
+const REGLAS = {
+  largo: (c) => c.length >= 8,
+  mayus: (c) => /[A-Z]/.test(c),
+  minus: (c) => /[a-z]/.test(c),
+  numero: (c) => /[0-9]/.test(c),
+};
+const claveNueva = document.getElementById("claveNueva");
+function revisarClave() {
+  let todas = true;
+  for (const li of document.querySelectorAll("#requisitos li")) {
+    const cumple = REGLAS[li.dataset.regla](claveNueva.value);
+    li.classList.toggle("cumple", cumple);
+    todas = todas && cumple;
+  }
+  return todas;
+}
+claveNueva.addEventListener("input", revisarClave);
+
+forms.crear.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const d = new FormData(forms.crear);
+  const error = forms.crear.querySelector(".error");
+  if (!PATRON_USUARIO.test(d.get("usuario"))) {
+    error.textContent = "El usuario debe ser solo letras (mínimo 4) y, si quieres, un número del 1 al 100 al final";
+    return;
+  }
+  if (!revisarClave()) { error.textContent = "La contraseña aún no cumple todos los requisitos"; return; }
+  if (d.get("contrasena") !== d.get("repetir")) { error.textContent = "Las contraseñas no coinciden"; return; }
+  enviar(forms.crear, "/api/cuentas", { usuario: d.get("usuario"), contrasena: d.get("contrasena") },
+         "Crear cuenta", (cuenta) => {
+    // La cuenta se crea sin iniciar sesión: se pasa a "Iniciar sesión" con el usuario ya escrito
+    forms.crear.reset();
+    revisarClave();
+    mostrar("entrar");
+    forms.entrar.elements.usuario.value = cuenta.usuario;
+    forms.entrar.elements.contrasena.focus();
+    const aviso = forms.entrar.querySelector(".error");
+    aviso.textContent = `Cuenta ${cuenta.usuario} creada. Ahora inicia sesión.`;
+    aviso.classList.add("exito");
+  });
+});
+</script>
+</body>
+</html>

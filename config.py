@@ -28,6 +28,10 @@ TAMANO_FRAGMENTO = 64 * 1024     # 64 KB por fragmento
 PLAZO = 5                        # deadline de llamadas cortas (segundos)
 PLAZO_ARCHIVO = 30               # deadline de subidas y descargas (segundos)
 
+# ---------------- cuentas y sesiones (gateway) ----------------
+CARPETA_GATEWAY = "datos_gateway"   # base de datos de usuarios y sesiones
+DURACION_SESION_HORAS = 8           # tiempo que dura una sesión iniciada
+
 # ---------------- valores propios de este equipo ----------------
 try:
     from config_local import *   # noqa: F401,F403  (archivo opcional, fuera de Git)

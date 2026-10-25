@@ -40,7 +40,7 @@
     :focus-visible { outline: 2px solid #8fb6ff; outline-offset: 3px; }
  
     /* ---------- encabezado ---------- */
-    .encabezado { text-align: center; padding: 40px 20px 8px; }
+    .encabezado { position: relative; text-align: center; padding: 40px 20px 8px; }
     .encabezado h1 {
       margin: 0;
       font-family: var(--display);
@@ -61,7 +61,15 @@
                     box-shadow: 0 0 8px var(--vivo); }
     .reloj.reconectando .punto { background: #ffb020; box-shadow: 0 0 8px #ffb020; }
     .reloj.sin-conexion .punto { background: var(--caido); box-shadow: 0 0 8px var(--caido); }
- 
+    .cuenta-usuario {
+      position: absolute; top: 18px; right: 22px; display: flex; align-items: center; gap: 12px;
+      font-size: 14px; color: var(--bruma);
+    }
+    .cuenta-usuario[hidden] { display: none; }
+    .cuenta-usuario strong { color: var(--hielo); font-weight: 600; }
+    .cuenta-usuario .rol { font-size: 12px; padding: 1px 8px; border-radius: 999px;
+                           border: 1px solid var(--neon-suave); }
+    .cuenta-usuario .boton { padding: 6px 12px; font-size: 13px; }
     main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 120px; }
  
     /* ---------- marco neón (paneles) ---------- */
@@ -241,7 +249,9 @@
       .nodo { padding: 12px; }
       .nodo h3 { font-size: 16px; }
       .nodo .estado { font-size: 12px; padding: 2px 9px; }
-      .nodo .archivos { font-size: 12px; }
+        .nodo .archivos { font-size: 12px; }
+      .encabezado { padding-top: 64px; }
+      .cuenta-usuario { left: 16px; right: 16px; top: 14px; justify-content: space-between; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { transition: none !important; animation: none !important; }
@@ -251,8 +261,11 @@
 <body>
  
 <header class="encabezado">
-  <h1>Almacenamiento distribuido</h1>
-  <p class="sub">Archivos replicados en varios nodos, comunicados por gRPC</p>
+  <div class="cuenta-usuario" id="cuentaUsuario" hidden>
+    <span><strong id="nombreUsuario"></strong> <span class="rol" id="rolUsuario"></span></span>
+    <button class="boton" id="btnSalir">Cerrar sesión</button>
+  </div>
+  <h1>Almacenamiento distribuido</h1>  <p class="sub">Archivos replicados en varios nodos, comunicados por gRPC</p>
   <div class="reloj" id="reloj"><span class="punto"></span><span id="actualizado">Conectando…</span></div>
 </header>
  
@@ -376,6 +389,7 @@ async function pedirJSON(url, opciones = {}, plazoMs = 10000) {
   const temporizador = setTimeout(() => control.abort(), plazoMs);
   try {
     const r = await fetch(url, { ...opciones, signal: control.signal });
+        if (r.status === 401) { location.href = "/entrar"; throw new Error("la sesión terminó"); }
     const datos = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(datos.detail || `HTTP ${r.status}`);
     return datos;
@@ -484,6 +498,7 @@ $("btnSubir").addEventListener("click", () => {
   xhr.onload = () => {
     let r = {};
     try { r = JSON.parse(xhr.responseText); } catch {}
+        if (xhr.status === 401) { location.href = "/entrar"; return; }
     if (xhr.status >= 400) {
       avisar(`No se pudo subir: ${r.detail || "error " + xhr.status}`, "error");
     } else {
@@ -505,6 +520,7 @@ async function descargar(nombre, boton) {
   boton.disabled = true;
   try {
     const r = await fetch(`/api/descargar/${encodeURIComponent(nombre)}`);
+        if (r.status === 401) { location.href = "/entrar"; return; }
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
     const fallidos = r.headers.get("X-Nodos-Fallidos");
     const blob = await r.blob();
@@ -587,6 +603,21 @@ async function actualizar() {
   }
 }
  
+// ---------------- sesión ----------------
+async function cargarUsuario() {
+  try {
+    const u = await pedirJSON("/api/sesion");
+    $("nombreUsuario").textContent = u.usuario;
+    $("rolUsuario").textContent = u.rol === "administrador" ? "Administrador" : "Usuario";
+    $("cuentaUsuario").hidden = false;
+  } catch {}
+}
+$("btnSalir").addEventListener("click", async () => {
+  await fetch("/api/sesion", { method: "DELETE" }).catch(() => {});
+  location.href = "/entrar";
+});
+
+cargarUsuario();
 actualizar();
 setInterval(actualizar, 2000);
 </script>

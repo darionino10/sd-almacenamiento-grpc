@@ -11,17 +11,20 @@ import hashlib
 import os
 
 import grpc
-from fastapi import FastAPI, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import (FileResponse, JSONResponse, RedirectResponse, Response,
+                               StreamingResponse)
 from pydantic import BaseModel, Field
 
 import almacenamiento_pb2 as pb
 import almacenamiento_pb2_grpc as pb_grpc
 import config
+import cuentas
 from config import PLAZO, PLAZO_ARCHIVO, TAMANO_FRAGMENTO
 
 # El gateway corre en el mismo equipo que el coordinador
 COORDINADOR = f"localhost:{config.PUERTO_COORDINADOR}"
+
 # Traducción de códigos gRPC a códigos HTTP
 CODIGOS_HTTP = {
     grpc.StatusCode.NOT_FOUND: 404,
@@ -40,8 +43,25 @@ app = FastAPI(
     openapi_tags=[
         {"name": "Nodos", "description": "Estado de los nodos de almacenamiento"},
         {"name": "Archivos", "description": "Subir, consultar, descargar y eliminar archivos"},
+        {"name": "Cuentas", "description": "Crear cuenta, iniciar y cerrar sesión"},
     ],
 )
+
+cuentas.iniciar_bd()
+COOKIE = "sesion"
+CARPETA_STATIC = os.path.join(os.path.dirname(__file__), "static")
+# Rutas de la API que se pueden usar sin haber iniciado sesión
+RUTAS_PUBLICAS = {"/api/cuentas", "/api/sesion"}
+
+
+@app.middleware("http")
+async def exigir_sesion(request: Request, siguiente):
+    """Toda la API, salvo crear cuenta e iniciar sesión, exige una sesión válida."""
+    ruta = request.url.path
+    if ruta.startswith("/api/") and ruta not in RUTAS_PUBLICAS:
+        if not cuentas.usuario_de_sesion(request.cookies.get(COOKIE)):
+            return JSONResponse(status_code=401, content={"detail": "Inicia sesión para continuar"})
+    return await siguiente(request)
 
 
 # ---------------- modelos de respuesta (documentación de /docs) ----------------
@@ -91,9 +111,28 @@ class ResultadoEliminacion(BaseModel):
     fallidos: list[str] = Field(description="nodos caídos donde quedó una copia sin borrar")
 
 
+class Usuario(BaseModel):
+    usuario: str = Field(examples=["senendarionino10"])
+    rol: str = Field(examples=["administrador"])
+
+
+class DatosCuenta(BaseModel):
+    usuario: str = Field(examples=["senendarionino10"],
+                         description="Nombres y apellidos todo pegado, solo letras, y opcionalmente "
+                                     "un número del 1 al 100 al final")
+    contrasena: str = Field(examples=["Almacen2026"],
+                            description="Mínimo 8 caracteres, con una mayúscula, una minúscula y un número")
+
+
+class DatosSesion(BaseModel):
+    usuario: str
+    contrasena: str
+
+
 # Respuestas de error comunes, para que /docs las muestre en cada endpoint
 NO_ENCONTRADO = {404: {"model": Error, "description": "El archivo no existe (gRPC NOT_FOUND)"}}
-NO_DISPONIBLE = {503: {"model": Error, "description": "Coordinador o nodos no disponibles "
+NO_DISPONIBLE = {401: {"model": Error, "description": "No hay una sesión iniciada"},
+                 503: {"model": Error, "description": "Coordinador o nodos no disponibles "
                                                       "(gRPC UNAVAILABLE)"},
                  504: {"model": Error, "description": "Se agotó el plazo (gRPC DEADLINE_EXCEEDED)"}}
 
@@ -110,8 +149,18 @@ def coordinador():
 
 # ---------------- página ----------------
 @app.get("/", include_in_schema=False)
-def inicio():
-    return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
+def inicio(request: Request):
+    if not cuentas.usuario_de_sesion(request.cookies.get(COOKIE)):
+        return RedirectResponse("/entrar")
+    return FileResponse(os.path.join(CARPETA_STATIC, "index.html"))
+
+
+@app.get("/entrar", include_in_schema=False)
+def pagina_entrar(request: Request):
+    if cuentas.usuario_de_sesion(request.cookies.get(COOKIE)):
+        return RedirectResponse("/")
+    return FileResponse(os.path.join(CARPETA_STATIC, "entrar.html"))
+
 
 @app.get("/favicon.ico", include_in_schema=False)
 @app.get("/apple-touch-icon.png", include_in_schema=False)
@@ -119,10 +168,56 @@ def inicio():
 def sin_icono():
     return Response(status_code=204)
 
+
+# ---------------- cuentas y sesión ----------------
+def _poner_cookie(respuesta: Response, token: str):
+    respuesta.set_cookie(COOKIE, token, httponly=True, samesite="lax",
+                         max_age=config.DURACION_SESION_HORAS * 3600)
+
+
+@app.post("/api/cuentas", tags=["Cuentas"], response_model=Usuario, status_code=201,
+          responses={400: {"model": Error, "description": "Datos no válidos o usuario repetido"}},
+          summary="Crear una cuenta")
+def crear_cuenta(datos: DatosCuenta):
+    """Crea la cuenta sin iniciar sesión. La primera cuenta del sistema queda como administrador."""
+    try:
+        return cuentas.crear_cuenta(datos.usuario, datos.contrasena)
+    except cuentas.ErrorCuenta as e:
+        raise HTTPException(400, str(e))
+
+@app.post("/api/sesion", tags=["Cuentas"], response_model=Usuario,
+          responses={401: {"model": Error, "description": "Usuario o contraseña incorrectos"}},
+          summary="Iniciar sesión")
+def iniciar_sesion(datos: DatosSesion, respuesta: Response):
+    try:
+        token, usuario = cuentas.iniciar_sesion(datos.usuario, datos.contrasena)
+    except cuentas.ErrorCuenta as e:
+        raise HTTPException(401, str(e))
+    _poner_cookie(respuesta, token)
+    return usuario
+
+
+@app.get("/api/sesion", tags=["Cuentas"], response_model=Usuario,
+         responses={401: {"model": Error, "description": "No hay una sesión iniciada"}},
+         summary="Usuario de la sesión actual")
+def sesion_actual(request: Request):
+    usuario = cuentas.usuario_de_sesion(request.cookies.get(COOKIE))
+    if not usuario:
+        raise HTTPException(401, "Inicia sesión para continuar")
+    return usuario
+
+
+@app.delete("/api/sesion", tags=["Cuentas"], status_code=204, summary="Cerrar sesión")
+def cerrar_sesion(request: Request):
+    cuentas.cerrar_sesion(request.cookies.get(COOKIE))
+    respuesta = Response(status_code=204)
+    respuesta.delete_cookie(COOKIE)
+    return respuesta
+
+
 # ---------------- API ----------------
 @app.get("/api/nodos", tags=["Nodos"], response_model=list[Nodo], responses=NO_DISPONIBLE,
          summary="Estado de los nodos")
-
 def estado_nodos():
     """Estado de cada nodo según el coordinador."""
     try:
@@ -135,7 +230,6 @@ def estado_nodos():
 
 @app.get("/api/archivos", tags=["Archivos"], response_model=list[Archivo],
          responses=NO_DISPONIBLE, summary="Listar archivos y réplicas")
-
 def listar_archivos():
     """Archivos registrados en el coordinador y sus réplicas."""
     try:
@@ -144,9 +238,9 @@ def listar_archivos():
         raise error_http(e)
     return [{"nombre": a.nombre, "replicas": list(a.nodos)} for a in r.archivos]
 
+
 @app.delete("/api/archivos/{nombre}", tags=["Archivos"], response_model=ResultadoEliminacion,
             responses={**NO_ENCONTRADO, **NO_DISPONIBLE}, summary="Eliminar un archivo")
-
 def eliminar(nombre: str):
     """Elimina el archivo de todas sus réplicas y del índice del coordinador."""
     try:
@@ -156,11 +250,11 @@ def eliminar(nombre: str):
     return {"nombre": r.nombre, "eliminados": list(r.nodos_eliminados),
             "fallidos": list(r.nodos_fallidos)}
 
+
 @app.post("/api/subir", tags=["Archivos"], response_model=ResultadoSubida,
           responses={400: {"model": Error, "description": "El archivo no tiene nombre"},
                      **NO_DISPONIBLE},
           summary="Subir un archivo a dos réplicas")
-
 def subir(archivo: UploadFile = File(...)):
     """Sube un archivo a los nodos que asigne el coordinador (streaming gRPC)."""
     nombre = os.path.basename(archivo.filename or "")
@@ -215,9 +309,9 @@ def subir(archivo: UploadFile = File(...)):
     return {"nombre": nombre, "sha256": esperado, "resultados": resultados,
             "confirmados": nodos_ok}
 
+
 @app.get("/api/info/{nombre}", tags=["Archivos"], response_model=list[Replica],
          responses={**NO_ENCONTRADO, **NO_DISPONIBLE}, summary="Metadatos en cada réplica")
-
 def info(nombre: str):
     """Metadatos del archivo en cada una de sus réplicas."""
     try:
@@ -245,7 +339,6 @@ def info(nombre: str):
                                          "no respondieron."},
                     **NO_ENCONTRADO, **NO_DISPONIBLE},
          summary="Descargar desde la primera réplica disponible")
-
 def descargar(nombre: str):
     """Descarga desde la primera réplica disponible; si una falla, prueba la siguiente."""
     try:
