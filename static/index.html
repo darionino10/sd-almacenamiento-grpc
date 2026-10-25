@@ -4,71 +4,372 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Almacenamiento distribuido · gRPC</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Unbounded:wght@500;700;800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --noche: #040a1c;
+      --panel: #071433;
+      --neon: #2f7dff;
+      --neon-suave: rgba(47, 125, 255, 0.35);
+      --hielo: #d9e6ff;
+      --bruma: #7d93c4;
+      --vivo: #17c47a;
+      --caido: #ff4560;
+      --display: "Unbounded", "Arial Black", system-ui, sans-serif;
+      --texto: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+      --mono: "IBM Plex Mono", Consolas, "Courier New", monospace;
+      --brillo: 0 0 0 1px rgba(80, 150, 255, 0.55), 0 0 22px rgba(40, 110, 255, 0.28),
+                inset 0 0 28px rgba(40, 110, 255, 0.07);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; }
+    body {
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse 80% 50% at 50% -10%, rgba(47, 125, 255, 0.22), transparent 70%),
+        repeating-linear-gradient(90deg, rgba(47, 125, 255, 0.05) 0 1px, transparent 1px 160px),
+        var(--noche);
+      color: var(--hielo);
+      font-family: var(--texto);
+      font-size: 15px;
+      line-height: 1.5;
+    }
+    button { font: inherit; }
+    :focus-visible { outline: 2px solid #8fb6ff; outline-offset: 3px; }
+ 
+    /* ---------- encabezado ---------- */
+    .encabezado { text-align: center; padding: 40px 20px 8px; }
+    .encabezado h1 {
+      margin: 0;
+      font-family: var(--display);
+      font-weight: 800;
+      font-size: clamp(22px, 4.2vw, 44px);
+      letter-spacing: -0.01em;
+      line-height: 1.1;
+      text-shadow: 0 0 28px rgba(47, 125, 255, 0.45);
+    }
+    .encabezado .sub { margin: 6px 0 0; color: var(--bruma); }
+    .reloj {
+      display: inline-flex; align-items: center; gap: 8px;
+      margin-top: 14px; padding: 4px 12px;
+      font-family: var(--mono); font-size: 13px; color: var(--bruma);
+      border: 1px solid var(--neon-suave); border-radius: 999px;
+    }
+    .reloj .punto { width: 8px; height: 8px; border-radius: 50%; background: var(--vivo);
+                    box-shadow: 0 0 8px var(--vivo); }
+    .reloj.reconectando .punto { background: #ffb020; box-shadow: 0 0 8px #ffb020; }
+    .reloj.sin-conexion .punto { background: var(--caido); box-shadow: 0 0 8px var(--caido); }
+ 
+    main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 120px; }
+ 
+    /* ---------- marco neón (paneles) ---------- */
+    .marco {
+      background: linear-gradient(180deg, rgba(10, 30, 75, 0.75), rgba(7, 20, 51, 0.85));
+      border-radius: 6px;
+      box-shadow: var(--brillo);
+    }
+    .barra {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--neon-suave);
+      background: rgba(47, 125, 255, 0.08);
+      border-radius: 6px 6px 0 0;
+    }
+    .barra h2 { margin: 0; font-size: 15px; font-weight: 600; color: #a9c6ff; }
+    .barra .cuenta { margin-left: auto; font-family: var(--mono); font-size: 13px; color: var(--bruma); }
+    .puntos { width: 14px; height: 14px; flex: none;
+              background-image: radial-gradient(circle, #5d95ff 1.2px, transparent 1.6px);
+              background-size: 5px 5px; }
+    .cuerpo { padding: 18px; }
+ 
+    /* ---------- nodos ---------- */
+    .nodos { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 18px;
+             margin-bottom: 24px; }
+    .nodo {
+      position: relative; padding: 18px 20px; border-radius: 6px;
+      transition: background-color 0.4s, box-shadow 0.4s;
+    }
+    .nodo.activo {
+      background: linear-gradient(160deg, rgba(23, 196, 122, 0.42), rgba(23, 196, 122, 0.18));
+      box-shadow: 0 0 0 1px rgba(23, 196, 122, 0.8), 0 0 26px rgba(23, 196, 122, 0.3);
+    }
+    .nodo.inactivo {
+      background: linear-gradient(160deg, rgba(255, 69, 96, 0.45), rgba(255, 69, 96, 0.18));
+      box-shadow: 0 0 0 1px rgba(255, 69, 96, 0.85), 0 0 26px rgba(255, 69, 96, 0.32);
+    }
+    .nodo h3 { margin: 0; font-family: var(--display); font-weight: 700; font-size: 26px;
+               letter-spacing: 0.01em; color: #fff; }
+    .nodo .estado { display: inline-block; margin-top: 10px; padding: 3px 12px; border-radius: 999px;
+                    font-weight: 600; font-size: 13px; color: #04150d; background: var(--vivo); }
+    .nodo.inactivo .estado { color: #fff; background: var(--caido); }
+    .nodo .archivos { margin: 10px 0 0; font-family: var(--mono); font-size: 13px; color: #e6f0ff; }
+    .mensaje-vacio { color: var(--bruma); padding: 8px 2px; }
+ 
+    /* ---------- contenido ---------- */
+    .contenido { display: grid; grid-template-columns: minmax(280px, 360px) 1fr; gap: 24px;
+                 align-items: start; }
+ 
+    /* subir */
+    .zona {
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+      min-height: 190px; padding: 22px; text-align: center; cursor: pointer;
+      border: 1.5px dashed rgba(90, 150, 255, 0.6); border-radius: 6px;
+      background: repeating-linear-gradient(135deg, rgba(47, 125, 255, 0.05) 0 10px, transparent 10px 20px);
+      transition: border-color 0.2s, background-color 0.2s;
+    }
+    .zona:hover, .zona.encima { border-color: #8fb6ff; background-color: rgba(47, 125, 255, 0.12); }
+    .zona svg { width: 38px; height: 38px; color: #6fa0ff; }
+    .zona strong { font-weight: 600; }
+    .zona small { color: var(--bruma); }
+    .zona .elegido { font-family: var(--mono); font-size: 13px; color: #fff; word-break: break-all; }
+    #archivo { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    .progreso { height: 4px; margin-top: 14px; border-radius: 4px; background: rgba(47, 125, 255, 0.15);
+                overflow: hidden; visibility: hidden; }
+    .progreso.visible { visibility: visible; }
+    .progreso div { height: 100%; width: 0; background: var(--neon); box-shadow: 0 0 10px var(--neon);
+                    transition: width 0.15s; }
+ 
+    /* botones */
+    .boton {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 9px 16px; border-radius: 5px; cursor: pointer;
+      font-weight: 600; font-size: 14px; color: var(--hielo);
+      background: transparent; border: 1px solid rgba(110, 160, 255, 0.55);
+      transition: background-color 0.15s, box-shadow 0.15s, transform 0.1s;
+    }
+    .boton:hover { background: rgba(47, 125, 255, 0.15); box-shadow: 0 0 14px rgba(47, 125, 255, 0.35); }
+    .boton:active { transform: translateY(1px); }
+    .boton:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+    .boton.principal { color: #fff; border-color: transparent;
+                       background: linear-gradient(180deg, #3d8bff, #1f5fe0);
+                       box-shadow: 0 0 0 1px #5d9bff, 0 0 18px rgba(47, 125, 255, 0.45); }
+    .boton.principal:hover { background: linear-gradient(180deg, #5299ff, #2a6cf0); }
+    .boton.peligro { color: #ff8a9b; border-color: rgba(255, 69, 96, 0.6); }
+    .boton.peligro:hover { background: rgba(255, 69, 96, 0.14); box-shadow: 0 0 14px rgba(255, 69, 96, 0.35); }
+    .boton.ancho { width: 100%; margin-top: 14px; padding: 12px; font-size: 15px; }
+ 
+    /* archivos */
+    .lista { list-style: none; margin: 0; padding: 0; }
+    .fila {
+      display: grid; grid-template-columns: 1fr auto 132px; gap: 18px; align-items: center;
+      padding: 14px 4px; border-bottom: 1px solid rgba(47, 125, 255, 0.18);
+    }
+    .fila:last-child { border-bottom: none; }
+    .fila .nombre { font-weight: 500; word-break: break-word; }
+    .replicas { display: flex; gap: 6px; flex-wrap: wrap; }
+    .replica { padding: 2px 9px; border-radius: 4px; font-family: var(--mono); font-size: 12px;
+               color: #bfffdc; background: rgba(23, 196, 122, 0.16); border: 1px solid rgba(23, 196, 122, 0.55); }
+    .replica.caida { color: #ffc2cb; background: rgba(255, 69, 96, 0.16); border-color: rgba(255, 69, 96, 0.6); }
+    .acciones { display: flex; flex-direction: column; gap: 6px; }
+    .acciones .boton { width: 100%; padding: 7px 10px; font-size: 13px; }
+ 
+    /* ---------- botón de actividad ---------- */
+    .boton-actividad {
+      position: fixed; right: 24px; bottom: 24px; z-index: 20;
+      display: inline-flex; align-items: center; gap: 10px;
+      padding: 14px 22px; border-radius: 10px; cursor: pointer;
+      font-family: var(--display); font-weight: 700; font-size: 15px; color: #fff;
+      background: linear-gradient(180deg, #4a93ff, #1d58d8);
+      border: 1px solid #7fb0ff;
+      box-shadow: 0 6px 0 #0d2f86, 0 10px 28px rgba(47, 125, 255, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+      transition: transform 0.08s, box-shadow 0.08s;
+    }
+    .boton-actividad:hover { box-shadow: 0 6px 0 #0d2f86, 0 10px 34px rgba(47, 125, 255, 0.75),
+                                         inset 0 1px 0 rgba(255, 255, 255, 0.35); }
+    .boton-actividad:active { transform: translateY(5px);
+                              box-shadow: 0 1px 0 #0d2f86, 0 4px 14px rgba(47, 125, 255, 0.5); }
+    .boton-actividad svg { width: 20px; height: 20px; }
+    .insignia { min-width: 22px; height: 22px; padding: 0 6px; border-radius: 999px;
+                font-family: var(--mono); font-size: 12px; line-height: 22px; text-align: center;
+                background: var(--caido); color: #fff; box-shadow: 0 0 10px var(--caido); }
+    .insignia[hidden] { display: none; }
+ 
+    /* ---------- panel lateral de actividad ---------- */
+    .velo { position: fixed; inset: 0; z-index: 30; background: rgba(2, 6, 18, 0.6);
+            opacity: 0; pointer-events: none; transition: opacity 0.25s; }
+    .velo.abierto { opacity: 1; pointer-events: auto; }
+    .lateral {
+      position: fixed; top: 0; right: 0; bottom: 0; z-index: 31;
+      width: min(420px, 92vw); display: flex; flex-direction: column;
+      background: var(--panel); box-shadow: var(--brillo);
+      transform: translateX(105%); transition: transform 0.28s ease;
+    }
+    .lateral.abierto { transform: none; }
+    .lateral .barra { border-radius: 0; }
+    .lateral .cerrar { margin-left: auto; }
+    .eventos { list-style: none; margin: 0; padding: 8px 18px 24px; overflow-y: auto; flex: 1; }
+    .evento { display: grid; grid-template-columns: 72px 1fr; gap: 10px; padding: 10px 0;
+              border-bottom: 1px solid rgba(47, 125, 255, 0.14); font-size: 14px; }
+    .evento time { font-family: var(--mono); font-size: 12px; color: var(--bruma); padding-top: 2px; }
+    .evento.exito span { color: #8ff0bf; }
+    .evento.error span { color: #ff9aaa; }
+    .evento.aviso span { color: #ffd27a; }
+    .evento.info span { color: #a9c6ff; }
+ 
+    /* ---------- avisos flotantes ---------- */
+    .avisos { position: fixed; top: 18px; right: 18px; z-index: 40; display: flex; flex-direction: column;
+              gap: 8px; width: min(360px, calc(100vw - 36px)); }
+    .aviso-flotante { padding: 11px 14px; border-radius: 6px; font-size: 14px; background: var(--panel);
+                      box-shadow: var(--brillo); border-left: 3px solid var(--neon);
+                      animation: entrar 0.25s ease; }
+    .aviso-flotante.exito { border-left-color: var(--vivo); }
+    .aviso-flotante.error { border-left-color: var(--caido); }
+    .aviso-flotante.aviso { border-left-color: #ffb020; }
+    @keyframes entrar { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: none; } }
+ 
+    /* ---------- diálogos ---------- */
+    dialog { width: min(520px, 92vw); padding: 0; border: none; border-radius: 6px; color: var(--hielo);
+             background: var(--panel); box-shadow: var(--brillo); }
+    dialog::backdrop { background: rgba(2, 6, 18, 0.7); }
+    dialog .cuerpo p { margin: 0 0 16px; }
+    dialog .pie { display: flex; justify-content: flex-end; gap: 10px; padding: 0 18px 18px; }
+    .detalle { margin: 0 0 12px; padding: 12px 14px; border-radius: 5px; background: rgba(47, 125, 255, 0.08);
+               border: 1px solid rgba(47, 125, 255, 0.25); }
+    .detalle h4 { margin: 0 0 6px; font-family: var(--display); font-size: 15px; }
+    .detalle dl { display: grid; grid-template-columns: 80px 1fr; gap: 4px 10px; margin: 0; font-size: 13px; }
+    .detalle dt { color: var(--bruma); }
+    .detalle dd { margin: 0; font-family: var(--mono); word-break: break-all; }
+ 
+    @media (max-width: 860px) {
+      .contenido { grid-template-columns: 1fr; }
+      .fila { grid-template-columns: 1fr; gap: 10px; }
+      .acciones { flex-direction: row; }
+      .boton-actividad { right: 16px; bottom: 16px; padding: 12px 18px; }
+      .nodos { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 10px; }
+      .nodo { padding: 12px; }
+      .nodo h3 { font-size: 16px; }
+      .nodo .estado { font-size: 12px; padding: 2px 9px; }
+      .nodo .archivos { font-size: 12px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; animation: none !important; }
+    }
+  </style>
 </head>
-<body class="bg-light">
+<body>
  
-<nav class="navbar navbar-dark bg-dark mb-4">
-  <div class="container">
-    <span class="navbar-brand">Almacenamiento distribuido con gRPC</span>
-    <span class="text-secondary small" id="actualizado">—</span>
-  </div>
-</nav>
+<header class="encabezado">
+  <h1>Almacenamiento distribuido</h1>
+  <p class="sub">Archivos replicados en varios nodos, comunicados por gRPC</p>
+  <div class="reloj" id="reloj"><span class="punto"></span><span id="actualizado">Conectando…</span></div>
+</header>
  
-<main class="container">
+<main>
+  <section class="nodos" id="nodos" aria-label="Nodos de almacenamiento">
+    <p class="mensaje-vacio">Cargando nodos…</p>
+  </section>
  
-  <!-- Nodos -->
-  <h5 class="mb-3">Nodos de almacenamiento</h5>
-  <div class="row g-3 mb-4" id="nodos">
-    <div class="col text-muted">Cargando…</div>
-  </div>
- 
-  <div class="row g-4">
-    <!-- Subir -->
-    <div class="col-lg-4">
-      <div class="card shadow-sm">
-        <div class="card-body">
-          <h5 class="card-title">Subir archivo</h5>
-          <input type="file" class="form-control mb-3" id="archivo">
-          <button class="btn btn-primary w-100" id="btnSubir">Subir</button>
-        </div>
+  <div class="contenido">
+    <section class="marco" aria-labelledby="titulo-subir">
+      <div class="barra"><span class="puntos"></span><h2 id="titulo-subir">Subir archivo</h2></div>
+      <div class="cuerpo">
+        <label class="zona" id="zona" for="archivo">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true">
+            <path d="M12 16V4m0 0-4 4m4-4 4 4"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>
+          </svg>
+          <strong id="textoZona">Arrastra un archivo aquí</strong>
+          <small id="ayudaZona">o haz clic para elegirlo</small>
+        </label>
+        <input type="file" id="archivo">
+        <div class="progreso" id="progreso"><div id="barraProgreso"></div></div>
+        <button class="boton principal ancho" id="btnSubir" disabled>Subir a dos nodos</button>
       </div>
+    </section>
  
-      <div class="card shadow-sm mt-4">
-        <div class="card-body">
-          <h5 class="card-title">Actividad</h5>
-          <ul class="list-unstyled small mb-0" id="actividad"></ul>
-        </div>
+    <section class="marco" aria-labelledby="titulo-archivos">
+      <div class="barra"><span class="puntos"></span><h2 id="titulo-archivos">Archivos</h2>
+        <span class="cuenta" id="cuentaArchivos"></span></div>
+      <div class="cuerpo">
+        <ul class="lista" id="archivos"><li class="mensaje-vacio">Cargando archivos…</li></ul>
       </div>
-    </div>
- 
-    <!-- Archivos -->
-    <div class="col-lg-8">
-      <div class="card shadow-sm">
-        <div class="card-body">
-          <h5 class="card-title">Archivos</h5>
-          <table class="table align-middle mb-0">
-            <thead><tr><th>Nombre</th><th>Réplicas</th><th class="text-end">Acciones</th></tr></thead>
-            <tbody id="archivos"><tr><td colspan="3" class="text-muted">Cargando…</td></tr></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
+    </section>
   </div>
 </main>
  
-<script>
-let estadoNodos = {};
+<button class="boton-actividad" id="btnActividad" aria-controls="lateral" aria-expanded="false">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+    <path d="M3 12h4l3-8 4 16 3-8h4"/>
+  </svg>
+  Actividad
+  <span class="insignia" id="insignia" hidden>0</span>
+</button>
  
-function registrar(texto, tipo = "secondary") {
-  const li = document.createElement("li");
-  li.className = `text-${tipo} mb-1`;
-  li.textContent = `${new Date().toLocaleTimeString()} · ${texto}`;
-  const lista = document.getElementById("actividad");
-  lista.prepend(li);
-  while (lista.children.length > 12) lista.lastChild.remove();
+<div class="velo" id="velo"></div>
+<aside class="lateral" id="lateral" aria-label="Actividad del sistema">
+  <div class="barra"><span class="puntos"></span><h2>Actividad</h2>
+    <button class="boton cerrar" id="btnCerrar">Cerrar</button></div>
+  <ul class="eventos" id="eventos">
+    <li class="mensaje-vacio">Aquí aparecerán las subidas, descargas y cambios de los nodos.</li>
+  </ul>
+</aside>
+ 
+<div class="avisos" id="avisos" aria-live="polite"></div>
+ 
+<dialog id="dialogoInfo">
+  <div class="barra"><span class="puntos"></span><h2 id="tituloInfo">Información</h2></div>
+  <div class="cuerpo" id="cuerpoInfo"></div>
+  <div class="pie"><button class="boton" onclick="this.closest('dialog').close()">Cerrar</button></div>
+</dialog>
+ 
+<dialog id="dialogoEliminar">
+  <div class="barra"><span class="puntos"></span><h2>Eliminar archivo</h2></div>
+  <div class="cuerpo"><p id="textoEliminar"></p></div>
+  <div class="pie">
+    <button class="boton" onclick="this.closest('dialog').close('no')">Cancelar</button>
+    <button class="boton peligro" onclick="this.closest('dialog').close('si')">Eliminar de todas las réplicas</button>
+  </div>
+</dialog>
+ 
+<script>
+// ---------------- utilidades ----------------
+const $ = (id) => document.getElementById(id);
+const hora24 = (d = new Date()) =>
+  d.toLocaleTimeString("es-CO", { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const escapar = (t) => String(t).replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const tamanoLegible = (b) => b == null ? "" : b < 1024 ? `${b} B`
+  : b < 1048576 ? `${(b / 1024).toFixed(1)} KB` : `${(b / 1048576).toFixed(1)} MB`;
+ 
+let estadoNodos = {};
+let eventos = [];
+let sinVer = 0;
+ 
+// ---------------- actividad y avisos ----------------
+function registrar(texto, tipo = "info") {
+  eventos.unshift({ hora: hora24(), texto, tipo });
+  eventos = eventos.slice(0, 60);
+  if (!$("lateral").classList.contains("abierto")) {
+    sinVer++;
+    $("insignia").textContent = sinVer;
+    $("insignia").hidden = false;
+  }
+  $("eventos").innerHTML = eventos.map((e) =>
+    `<li class="evento ${e.tipo}"><time>${e.hora}</time><span>${escapar(e.texto)}</span></li>`).join("");
 }
  
+function avisar(texto, tipo = "info") {
+  registrar(texto, tipo);
+  const div = document.createElement("div");
+  div.className = `aviso-flotante ${tipo}`;
+  div.textContent = texto;
+  $("avisos").prepend(div);
+  setTimeout(() => div.remove(), 4500);
+}
+ 
+function abrirActividad(abrir) {
+  $("lateral").classList.toggle("abierto", abrir);
+  $("velo").classList.toggle("abierto", abrir);
+  $("btnActividad").setAttribute("aria-expanded", abrir);
+  if (abrir) { sinVer = 0; $("insignia").hidden = true; $("btnCerrar").focus(); }
+}
+$("btnActividad").addEventListener("click", () => abrirActividad(true));
+$("btnCerrar").addEventListener("click", () => abrirActividad(false));
+$("velo").addEventListener("click", () => abrirActividad(false));
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") abrirActividad(false); });
+ 
+// ---------------- peticiones ----------------
 // Petición con plazo máximo: en conexiones lentas no se queda colgada para siempre
 async function pedirJSON(url, opciones = {}, plazoMs = 10000) {
   const control = new AbortController();
@@ -86,151 +387,206 @@ async function pedirJSON(url, opciones = {}, plazoMs = 10000) {
   }
 }
  
+// ---------------- nodos ----------------
 async function cargarNodos() {
-  const cont = document.getElementById("nodos");
   const nodos = await pedirJSON("/api/nodos");
   if (!nodos.length) {
-    cont.innerHTML = '<div class="col text-muted">No hay nodos registrados</div>';
+    $("nodos").innerHTML = '<p class="mensaje-vacio">Ningún nodo se ha registrado todavía. Inicia al menos uno.</p>';
     return;
   }
-  cont.innerHTML = "";
   for (const n of nodos) {
-    // Avisar en la actividad cuando un nodo cambia de estado
     if (n.id in estadoNodos && estadoNodos[n.id] !== n.vivo) {
-      registrar(`${n.id} ${n.vivo ? "volvió a estar disponible" : "NO RESPONDE"}`,
-                n.vivo ? "success" : "danger");
+      avisar(`${n.id.toUpperCase()} ${n.vivo ? "volvió a estar activo" : "dejó de responder"}`,
+             n.vivo ? "exito" : "error");
     }
     estadoNodos[n.id] = n.vivo;
-    cont.insertAdjacentHTML("beforeend", `
-      <div class="col-sm-6 col-lg-3">
-        <div class="card shadow-sm border-${n.vivo ? "success" : "danger"}">
-          <div class="card-body">
-            <div class="d-flex justify-content-between align-items-center">
-              <h6 class="mb-0">${n.id}</h6>
-              <span class="badge bg-${n.vivo ? "success" : "danger"}">${n.vivo ? "Activo" : "Caído"}</span>
-            </div>
-            <div class="text-muted small mt-2">${n.direccion}</div>
-            <div class="small">${n.archivos} archivo(s)</div>
-          </div>
-        </div>
-      </div>`);
   }
+  $("nodos").innerHTML = nodos.map((n) => `
+    <article class="nodo ${n.vivo ? "activo" : "inactivo"}">
+      <h3>${escapar(n.id.toUpperCase())}</h3>
+      <span class="estado">${n.vivo ? "Activo" : "Inactivo"}</span>
+      <p class="archivos">${n.archivos} ${n.archivos === 1 ? "archivo" : "archivos"}</p>
+    </article>`).join("");
 }
  
+// ---------------- archivos ----------------
 async function cargarArchivos() {
-  const cuerpo = document.getElementById("archivos");
   const archivos = await pedirJSON("/api/archivos");
+  $("cuentaArchivos").textContent = archivos.length ? `${archivos.length} en total` : "";
   if (!archivos.length) {
-    cuerpo.innerHTML = '<tr><td colspan="3" class="text-muted">No hay archivos</td></tr>';
+    $("archivos").innerHTML = '<li class="mensaje-vacio">Aún no hay archivos. Sube el primero desde el panel de la izquierda.</li>';
     return;
   }
-  cuerpo.innerHTML = archivos.map(a => `
-    <tr>
-      <td>${a.nombre}</td>
-      <td>${a.replicas.map(r =>
-        `<span class="badge bg-${estadoNodos[r] === false ? "danger" : "secondary"} me-1">${r}</span>`).join("")}</td>
-      <td class="text-end">
-        <button class="btn btn-sm btn-outline-secondary me-1" onclick="verInfo('${a.nombre}')">Info</button>
-        <button class="btn btn-sm btn-success" onclick="descargar('${a.nombre}')">Descargar</button>
-        <button class="btn btn-sm btn-outline-danger ms-1" onclick="eliminar('${a.nombre}')">Eliminar</button>
-      </td>
-    </tr>`).join("");
+  $("archivos").innerHTML = archivos.map((a) => {
+    const id = encodeURIComponent(a.nombre);
+    return `
+    <li class="fila">
+      <div class="nombre">${escapar(a.nombre)}</div>
+      <div class="replicas">${a.replicas.map((r) =>
+        `<span class="replica ${estadoNodos[r] === false ? "caida" : ""}">${escapar(r.toUpperCase())}</span>`).join("")}</div>
+      <div class="acciones">
+        <button class="boton principal" data-accion="descargar" data-nombre="${id}">Descargar</button>
+        <button class="boton" data-accion="info" data-nombre="${id}">Información</button>
+        <button class="boton peligro" data-accion="eliminar" data-nombre="${id}">Eliminar</button>
+      </div>
+    </li>`;
+  }).join("");
 }
  
-async function subir() {
-  const entrada = document.getElementById("archivo");
-  if (!entrada.files.length) return registrar("Selecciona un archivo primero", "warning");
+$("archivos").addEventListener("click", (e) => {
+  const boton = e.target.closest("button[data-accion]");
+  if (!boton) return;
+  const nombre = decodeURIComponent(boton.dataset.nombre);
+  ({ descargar, info: verInfo, eliminar })[boton.dataset.accion](nombre, boton);
+});
+ 
+// ---------------- subir ----------------
+let archivoElegido = null;
+ 
+function elegir(archivo) {
+  archivoElegido = archivo || null;
+  $("btnSubir").disabled = !archivoElegido;
+  $("textoZona").innerHTML = archivoElegido
+    ? `<span class="elegido">${escapar(archivoElegido.name)}</span>` : "Arrastra un archivo aquí";
+  $("ayudaZona").textContent = archivoElegido
+    ? `${tamanoLegible(archivoElegido.size)}, haz clic para cambiarlo` : "o haz clic para elegirlo";
+}
+ 
+$("archivo").addEventListener("change", (e) => elegir(e.target.files[0]));
+["dragenter", "dragover"].forEach((ev) => $("zona").addEventListener(ev, (e) => {
+  e.preventDefault(); $("zona").classList.add("encima");
+}));
+["dragleave", "drop"].forEach((ev) => $("zona").addEventListener(ev, (e) => {
+  e.preventDefault(); $("zona").classList.remove("encima");
+}));
+$("zona").addEventListener("drop", (e) => elegir(e.dataTransfer.files[0]));
+ 
+$("btnSubir").addEventListener("click", () => {
+  if (!archivoElegido) return;
   const datos = new FormData();
-  datos.append("archivo", entrada.files[0]);
-  try {
-    const r = await pedirJSON("/api/subir", { method: "POST", body: datos }, 120000);
-    for (const res of r.resultados) {
-      registrar(res.ok
-        ? `${r.nombre} → ${res.nodo}: ${res.fragmentos} fragmento(s), hash ${res.hash_ok ? "OK" : "NO COINCIDE"}`
-        : `${r.nombre} → ${res.nodo}: ERROR ${res.error}`, res.ok ? "success" : "danger");
+  datos.append("archivo", archivoElegido);
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", "/api/subir");
+  xhr.timeout = 120000;
+  $("btnSubir").disabled = true;
+  $("btnSubir").textContent = "Subiendo…";
+  $("progreso").classList.add("visible");
+  xhr.upload.onprogress = (e) => {
+    if (e.lengthComputable) $("barraProgreso").style.width = `${(e.loaded / e.total) * 100}%`;
+  };
+  const terminar = () => {
+    $("progreso").classList.remove("visible");
+    $("barraProgreso").style.width = "0";
+    $("btnSubir").textContent = "Subir a dos nodos";
+    $("archivo").value = "";
+    elegir(null);
+  };
+  xhr.onload = () => {
+    let r = {};
+    try { r = JSON.parse(xhr.responseText); } catch {}
+    if (xhr.status >= 400) {
+      avisar(`No se pudo subir: ${r.detail || "error " + xhr.status}`, "error");
+    } else {
+      for (const res of r.resultados) {
+        if (!res.ok) registrar(`${r.nombre}: falló en ${res.nodo.toUpperCase()} (${res.error})`, "error");
+      }
+      avisar(`${r.nombre} guardado en ${r.confirmados.map((n) => n.toUpperCase()).join(" y ")}`, "exito");
     }
-    registrar(`${r.nombre} confirmado por el coordinador en ${r.confirmados.join(", ")}`, "primary");
-    entrada.value = "";
+    terminar();
     actualizar();
-  } catch (e) {
-    registrar(`Error al subir: ${e.message}`, "danger");
-  }
-}
+  };
+  xhr.onerror = () => { avisar("No se pudo subir: se perdió la conexión", "error"); terminar(); };
+  xhr.ontimeout = () => { avisar("No se pudo subir: la conexión tardó demasiado", "error"); terminar(); };
+  xhr.send(datos);
+});
  
-async function descargar(nombre) {
+// ---------------- acciones de archivos ----------------
+async function descargar(nombre, boton) {
+  boton.disabled = true;
   try {
     const r = await fetch(`/api/descargar/${encodeURIComponent(nombre)}`);
-    if (!r.ok) throw new Error((await r.json()).detail);
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
     const fallidos = r.headers.get("X-Nodos-Fallidos");
-    if (fallidos) registrar(`Falló ${fallidos} → se usó la réplica`, "warning");
     const blob = await r.blob();
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = nombre;
     a.click();
     URL.revokeObjectURL(a.href);
-    registrar(`${nombre} descargado desde ${r.headers.get("X-Nodo-Origen")}`, "success");
+    const origen = (r.headers.get("X-Nodo-Origen") || "").toUpperCase();
+    avisar(fallidos ? `${nombre} descargado desde ${origen}; la réplica ${fallidos.toUpperCase()} no respondió`
+                    : `${nombre} descargado desde ${origen}`, fallidos ? "aviso" : "exito");
   } catch (e) {
-    registrar(`Error al descargar ${nombre}: ${e.message}`, "danger");
-  }
-}
- 
-async function eliminar(nombre) {
-  if (!confirm(`¿Eliminar "${nombre}" de todas sus réplicas?`)) return;
-  try {
-    const r = await pedirJSON(`/api/archivos/${encodeURIComponent(nombre)}`, { method: "DELETE" });
-    registrar(`${r.nombre} eliminado de ${r.eliminados.join(", ") || "ningún nodo"}`, "primary");
-    if (r.fallidos.length)
-      registrar(`${r.nombre}: no se pudo borrar en ${r.fallidos.join(", ")} (nodo caído)`, "warning");
-    actualizar();
-  } catch (e) {
-    registrar(`Error al eliminar ${nombre}: ${e.message}`, "danger");
+    avisar(`No se pudo descargar ${nombre}: ${e.message}`, "error");
+  } finally {
+    boton.disabled = false;
   }
 }
  
 async function verInfo(nombre) {
   try {
-    const info = await pedirJSON(`/api/info/${encodeURIComponent(nombre)}`);
-    for (const i of info) {
-      registrar(i.error ? `${nombre} en ${i.nodo}: ${i.error}`
-                        : `${nombre} en ${i.nodo}: ${i.bytes} bytes, SHA-256 ${i.sha256.slice(0, 12)}…`,
-                i.error ? "danger" : "secondary");
-    }
+    const replicas = await pedirJSON(`/api/info/${encodeURIComponent(nombre)}`);
+    $("tituloInfo").textContent = nombre;
+    $("cuerpoInfo").innerHTML = replicas.map((i) => `
+      <div class="detalle">
+        <h4>${escapar(i.nodo.toUpperCase())}</h4>
+        ${i.error ? `<p>No respondió (${escapar(i.error)})</p>` : `
+        <dl>
+          <dt>Tamaño</dt><dd>${tamanoLegible(i.bytes)}</dd>
+          <dt>Subido</dt><dd>${escapar((i.fecha || "").replace("T", " "))}</dd>
+          <dt>SHA-256</dt><dd>${escapar(i.sha256)}</dd>
+        </dl>`}
+      </div>`).join("");
+    $("dialogoInfo").showModal();
   } catch (e) {
-    registrar(`Error: ${e.message}`, "danger");
+    avisar(`No se pudo consultar ${nombre}: ${e.message}`, "error");
   }
 }
  
+function eliminar(nombre) {
+  const dialogo = $("dialogoEliminar");
+  $("textoEliminar").textContent = `¿Eliminar "${nombre}" de todos los nodos donde está guardado?`;
+  dialogo.returnValue = "";
+  dialogo.showModal();
+  dialogo.addEventListener("close", async () => {
+    if (dialogo.returnValue !== "si") return;
+    try {
+      const r = await pedirJSON(`/api/archivos/${encodeURIComponent(nombre)}`, { method: "DELETE" });
+      avisar(`${r.nombre} eliminado de ${r.eliminados.map((n) => n.toUpperCase()).join(" y ") || "ningún nodo"}`, "exito");
+      if (r.fallidos.length)
+        registrar(`${r.nombre}: quedó una copia en ${r.fallidos.join(", ").toUpperCase()} (nodo inactivo)`, "aviso");
+      actualizar();
+    } catch (e) {
+      avisar(`No se pudo eliminar ${nombre}: ${e.message}`, "error");
+    }
+  }, { once: true });
+}
+ 
+// ---------------- actualización periódica ----------------
 let actualizando = false;   // evita encimar consultas en conexiones lentas
 let fallosSeguidos = 0;
  
-function mostrarSinConexion(mensaje) {
-  document.getElementById("nodos").innerHTML =
-    `<div class="col"><div class="alert alert-danger mb-0">Sin conexión con el sistema: ${mensaje}</div></div>`;
-  document.getElementById("archivos").innerHTML =
-    `<tr><td colspan="3" class="text-danger">Sin conexión: ${mensaje}</td></tr>`;
-}
- 
 async function actualizar() {
-  if (actualizando) return;   // la consulta anterior aún no termina
+  if (actualizando) return;
   actualizando = true;
-  const estado = document.getElementById("actualizado");
   try {
     await cargarNodos();
     await cargarArchivos();
     fallosSeguidos = 0;
-    estado.textContent = "Actualizado " + new Date().toLocaleTimeString();
+    $("reloj").className = "reloj";
+    $("actualizado").textContent = `Actualizado ${hora24()}`;
   } catch (e) {
     fallosSeguidos++;
-    // Se conservan los últimos datos; solo tras 3 fallos seguidos se muestra el error
-    estado.textContent = `Reconectando… (intento ${fallosSeguidos})`;
-    if (fallosSeguidos >= 3) mostrarSinConexion(e.message);
+    // Se conservan los últimos datos; solo tras 3 fallos seguidos se avisa la desconexión
+    $("reloj").className = fallosSeguidos >= 3 ? "reloj sin-conexion" : "reloj reconectando";
+    $("actualizado").textContent = fallosSeguidos >= 3
+      ? `Sin conexión: ${e.message}` : `Reconectando… (intento ${fallosSeguidos})`;
+    if (fallosSeguidos === 3) registrar(`Se perdió la conexión con el sistema: ${e.message}`, "error");
   } finally {
     actualizando = false;
   }
 }
  
-document.getElementById("btnSubir").addEventListener("click", subir);
 actualizar();
 setInterval(actualizar, 2000);
 </script>
