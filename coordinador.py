@@ -4,12 +4,12 @@
 - Comprueba cada pocos segundos qué nodos siguen vivos (Ping).
 - Decide en qué dos nodos se guarda cada archivo (replicación).
 - Indica al cliente desde qué nodos descargar, poniendo primero los vivos.
+- Guarda el índice y la bitácora de eventos en SQLite (indice.py).
 
 Uso:
     python coordinador.py --puerto 50050
 """
 import argparse
-import json
 import logging
 import os
 import threading
@@ -22,34 +22,33 @@ import almacenamiento_pb2 as pb
 import almacenamiento_pb2_grpc as pb_grpc
 import config
 from config import INTERVALO_SALUD, PLAZO_PING, REPLICAS
+from indice import Indice
+
 CARPETA = "datos_coordinador"
-RUTA_INDICE = os.path.join(CARPETA, "indice.json")
+RUTA_BD = os.path.join(CARPETA, "coordinador.db")
+RUTA_JSON_ANTERIOR = os.path.join(CARPETA, "indice.json")
 
 
 class CoordinadorServicer(pb_grpc.CoordinadorServicer):
 
     def __init__(self):
         self.candado = threading.Lock()
-        self.nodos = {}      # nodo_id -> {"direccion": str, "vivo": bool}
-        self.archivos = {}   # nombre -> [nodo_id, nodo_id] (solo subidas confirmadas)
-        self.pendientes = {} # nombre -> nodos asignados que aún no confirman
-        os.makedirs(CARPETA, exist_ok=True)
-        self._cargar_indice()
+        self.indice = Indice(RUTA_BD)
+        migrados = self.indice.migrar_json(RUTA_JSON_ANTERIOR)
+        if migrados:
+            self._evento("migracion", f"Se importaron {migrados} archivo(s) desde indice.json")
+        # El estado vivo/caído solo vive en memoria: al arrancar, todos empiezan como caídos
+        # hasta que se registran o responden al ping.
+        self.nodos = {i: {"direccion": d, "vivo": False} for i, d in self.indice.nodos().items()}
+        self.pendientes = {}   # nombre -> nodos asignados que aún no confirman la subida
+        self.vistos = set()    # nodos que ya respondieron en esta sesión del coordinador
+        self._evento("coordinador_iniciado",
+                     f"Coordinador iniciado con {len(self.nodos)} nodo(s) conocido(s)")
 
-    # ---------- persistencia del índice ----------
-    def _cargar_indice(self):
-        if os.path.exists(RUTA_INDICE):
-            with open(RUTA_INDICE, encoding="utf-8") as f:
-                datos = json.load(f)
-            self.archivos = datos.get("archivos", {})
-            for nodo_id, direccion in datos.get("nodos", {}).items():
-                self.nodos[nodo_id] = {"direccion": direccion, "vivo": False}
-
-    def _guardar_indice(self):
-        datos = {"nodos": {i: n["direccion"] for i, n in self.nodos.items()},
-                 "archivos": self.archivos}
-        with open(RUTA_INDICE, "w", encoding="utf-8") as f:
-            json.dump(datos, f, indent=2, ensure_ascii=False)
+    def _evento(self, tipo, detalle, nivel=logging.INFO):
+        """Escribe el evento en la bitácora (SQLite) y en el registro de la terminal."""
+        self.indice.evento(tipo, detalle)
+        logging.log(nivel, detalle)
 
     def _info(self, nodo_id):
         return pb.InfoNodo(nodo_id=nodo_id, direccion=self.nodos[nodo_id]["direccion"])
@@ -58,15 +57,20 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
     def RegistrarNodo(self, request, context):
         with self.candado:
             anterior = self.nodos.get(request.nodo_id)
+            visto = request.nodo_id in self.vistos
             self.nodos[request.nodo_id] = {"direccion": request.direccion, "vivo": True}
-            self._guardar_indice()
+            self.vistos.add(request.nodo_id)
+            self.indice.guardar_nodo(request.nodo_id, request.direccion)
         if anterior is None:
-            logging.info("Nodo registrado: %s en %s", request.nodo_id, request.direccion)
+            self._evento("nodo_registrado",
+                         f"Nodo registrado: {request.nodo_id} en {request.direccion}")
+        elif not visto:
+            # Ya era conocido, pero es su primera conexión desde que arrancó el coordinador
+            self._evento("nodo_conectado", f"Nodo {request.nodo_id} conectado en {request.direccion}")
         elif not anterior["vivo"]:
-            logging.warning("Nodo %s VOLVIÓ a estar disponible (se registró de nuevo)",
-                            request.nodo_id)
-        else:
-            logging.info("Nodo %s se registró de nuevo", request.nodo_id)
+            self._evento("nodo_volvio",
+                         f"Nodo {request.nodo_id} VOLVIÓ a estar disponible (se registró de nuevo)",
+                         logging.WARNING)
         return pb.RespuestaRegistro(ok=True, mensaje=f"{request.nodo_id} registrado")
 
     def UbicarArchivo(self, request, context):
@@ -79,8 +83,8 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                     context.abort(grpc.StatusCode.UNAVAILABLE,
                                   "No hay nodos de almacenamiento disponibles")
                 # Se eligen los nodos vivos con menos archivos (reparto de carga).
-                carga = {i: sum(i in r for r in self.archivos.values()) for i in vivos}
-                elegidos = sorted(vivos, key=lambda i: carga[i])[:REPLICAS]
+                carga = self.indice.carga()
+                elegidos = sorted(vivos, key=lambda i: carga.get(i, 0))[:REPLICAS]
                 if len(elegidos) < REPLICAS:
                     logging.warning("Solo hay %d nodo(s) vivo(s): '%s' tendrá menos réplicas",
                                     len(elegidos), nombre)
@@ -91,10 +95,10 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                 return pb.Ubicacion(nombre=nombre, nodos=[self._info(i) for i in elegidos])
 
             # DESCARGAR
-            if nombre not in self.archivos:
+            replicas = self.indice.replicas(nombre)
+            if replicas is None:
                 context.abort(grpc.StatusCode.NOT_FOUND,
                               f"El coordinador no conoce el archivo '{nombre}'")
-            replicas = self.archivos[nombre]
             # Primero los nodos vivos; los caídos quedan al final como último intento.
             ordenados = sorted(replicas, key=lambda i: not self.nodos.get(i, {}).get("vivo"))
             logging.info("Descarga de '%s': réplicas %s", nombre, ordenados)
@@ -113,34 +117,34 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
             if not confirmados:
                 context.abort(grpc.StatusCode.INVALID_ARGUMENT,
                               f"La subida de '{nombre}' no se completó en ningún nodo")
-            self.archivos[nombre] = confirmados
-            self._guardar_indice()
+            self.indice.registrar_archivo(nombre, confirmados, request.tamano_bytes,
+                                          request.hash_sha256)
         fallidos = [i for i in asignados if i not in confirmados]
         if fallidos:
-            logging.warning("Subida de '%s' confirmada solo en %s (falló en %s)",
-                            nombre, confirmados, fallidos)
+            self._evento("subida_parcial", f"Subida de '{nombre}' confirmada solo en {confirmados} "
+                                           f"(falló en {fallidos})", logging.WARNING)
         else:
-            logging.info("Subida de '%s' confirmada en %s (%d bytes)",
-                         nombre, confirmados, request.tamano_bytes)
+            self._evento("archivo_subido", f"Subida de '{nombre}' confirmada en {confirmados} "
+                                           f"({request.tamano_bytes} bytes)")
         return pb.RespuestaRegistro(
             ok=True, mensaje=f"'{nombre}' registrado en {', '.join(confirmados)}")
 
     def EliminarArchivo(self, request, context):
         nombre = os.path.basename(request.nombre)
         with self.candado:
-            if nombre not in self.archivos:
+            replicas = self.indice.replicas(nombre)
+            if replicas is None:
                 context.abort(grpc.StatusCode.NOT_FOUND,
                               f"El coordinador no conoce el archivo '{nombre}'")
-            replicas = [(i, self.nodos[i]["direccion"]) for i in self.archivos[nombre]
-                        if i in self.nodos]
+            destinos = [(i, self.nodos[i]["direccion"]) for i in replicas if i in self.nodos]
 
         # Se pide a cada nodo que borre su copia (fuera del candado: son llamadas de red).
         eliminados, fallidos = [], []
-        for nodo_id, direccion in replicas:
+        for nodo_id, direccion in destinos:
             try:
                 with grpc.insecure_channel(direccion) as canal:
                     pb_grpc.NodoAlmacenamientoStub(canal).EliminarArchivo(
-                            pb.SolicitudArchivo(nombre=nombre), timeout=config.PLAZO)
+                        pb.SolicitudArchivo(nombre=nombre), timeout=config.PLAZO)
                 eliminados.append(nodo_id)
             except grpc.RpcError as e:
                 if e.code() == grpc.StatusCode.NOT_FOUND:
@@ -149,25 +153,25 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                     fallidos.append(nodo_id)
 
         with self.candado:
-            self.archivos.pop(nombre, None)
-            self._guardar_indice()
+            self.indice.eliminar_archivo(nombre)
         if fallidos:
-            logging.warning("Archivo '%s' eliminado de %s; quedó una copia huérfana en %s "
-                            "(nodo no disponible)", nombre, eliminados, fallidos)
+            self._evento("copia_huerfana", f"Archivo '{nombre}' eliminado de {eliminados}; quedó una "
+                                           f"copia huérfana en {fallidos} (nodo no disponible)",
+                         logging.WARNING)
         else:
-            logging.info("Archivo '%s' eliminado de %s", nombre, eliminados)
+            self._evento("archivo_eliminado", f"Archivo '{nombre}' eliminado de {eliminados}")
         return pb.ResultadoEliminacion(nombre=nombre, nodos_eliminados=eliminados,
                                        nodos_fallidos=fallidos)
 
     def ListarArchivos(self, request, context):
-        with self.candado:
-            entradas = [pb.EntradaArchivo(nombre=n, nodos=r) for n, r in self.archivos.items()]
+        entradas = [pb.EntradaArchivo(nombre=n, nodos=r) for n, r in self.indice.archivos().items()]
         return pb.ListaArchivos(archivos=entradas)
 
     def EstadoNodos(self, request, context):
+        carga = self.indice.carga()
         with self.candado:
             nodos = [pb.EstadoNodo(nodo_id=i, direccion=n["direccion"], vivo=n["vivo"],
-                                   archivos=sum(i in r for r in self.archivos.values()))
+                                   archivos=carga.get(i, 0))
                      for i, n in sorted(self.nodos.items())]
         return pb.ListaNodos(nodos=nodos)
 
@@ -181,15 +185,27 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                 try:
                     with grpc.insecure_channel(nodo["direccion"]) as canal:
                         pb_grpc.NodoAlmacenamientoStub(canal).Ping(
-                                pb.SolicitudPing(origen="coordinador"), timeout=PLAZO_PING)
+                            pb.SolicitudPing(origen="coordinador"), timeout=PLAZO_PING)
                     vivo = True
                 except grpc.RpcError:
                     vivo = False
+                cambio = False
                 with self.candado:
+                    visto = nodo_id in self.vistos
+                    if vivo:
+                        self.vistos.add(nodo_id)
                     if nodo_id in self.nodos and self.nodos[nodo_id]["vivo"] != vivo:
                         self.nodos[nodo_id]["vivo"] = vivo
-                        estado = "VOLVIÓ a estar disponible" if vivo else "NO RESPONDE (caído)"
-                        logging.warning("Nodo %s %s", nodo_id, estado)
+                        cambio = True
+                if cambio:
+                    if vivo and not visto:
+                        self._evento("nodo_conectado", f"Nodo {nodo_id} conectado")
+                    elif vivo:
+                        self._evento("nodo_volvio", f"Nodo {nodo_id} VOLVIÓ a estar disponible",
+                                     logging.WARNING)
+                    else:
+                        self._evento("nodo_caido", f"Nodo {nodo_id} NO RESPONDE (caído)",
+                                     logging.WARNING)
             time.sleep(INTERVALO_SALUD)
 
 
