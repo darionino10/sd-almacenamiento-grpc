@@ -118,14 +118,19 @@ class Indice:
 
     # ---------------- bitácora de eventos ----------------
     def evento(self, tipo, detalle, usuario=""):
+        """Guarda un evento y lo devuelve con su id y fecha."""
+        fecha = _ahora()
         with self._con() as con:
-            con.execute("INSERT INTO eventos (fecha, tipo, detalle, usuario) VALUES (?, ?, ?, ?)",
-                        (_ahora(), tipo, detalle, usuario))
-
+            cursor = con.execute(
+                "INSERT INTO eventos (fecha, tipo, detalle, usuario) VALUES (?, ?, ?, ?)",
+                (fecha, tipo, detalle, usuario))
+        return {"id": cursor.lastrowid, "fecha": fecha, "tipo": tipo, "detalle": detalle,
+                "usuario": usuario}
+    
     def eventos(self, limite=50):
         """Los eventos más recientes, del más nuevo al más antiguo."""
         with self._con() as con:
             con.row_factory = sqlite3.Row
             return [dict(f) for f in con.execute(
                 "SELECT id, fecha, tipo, detalle, usuario FROM eventos ORDER BY id DESC LIMIT ?",
-                (limite,))]
+                (limite,))] 

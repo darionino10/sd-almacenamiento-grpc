@@ -23,6 +23,9 @@ import almacenamiento_pb2_grpc as pb_grpc
 import config
 from config import PLAZO, PLAZO_ARCHIVO, TAMANO_FRAGMENTO
 
+# Quién hace las acciones desde la consola (se envía al coordinador en los metadatos gRPC)
+METADATOS = [("usuario", "consola")]
+
 def generar_fragmentos(ruta):
     """Lee el archivo por bloques y produce mensajes Fragmento (streaming)."""
     nombre = os.path.basename(ruta)
@@ -41,13 +44,14 @@ def hash_local(ruta):
     return sha.hexdigest()
 
 
-def ubicar(coordinador, nombre, operacion):
+def ubicar(coordinador, nombre, operacion, accion=""):
     """Pregunta al coordinador qué nodos usar."""
+    metadatos = METADATOS + ([("accion", accion)] if accion else [])
     with grpc.insecure_channel(coordinador) as canal:
         stub = pb_grpc.CoordinadorStub(canal)
         return stub.UbicarArchivo(
-            pb.SolicitudUbicacion(nombre=nombre, operacion=operacion), timeout=PLAZO)
-
+            pb.SolicitudUbicacion(nombre=nombre, operacion=operacion), timeout=PLAZO,
+            metadata=metadatos)
 
 # ---------------- comandos ----------------
 def subir(args):
@@ -83,13 +87,13 @@ def subir(args):
         r = pb_grpc.CoordinadorStub(canal).ConfirmarSubida(
             pb.ConfirmacionSubida(nombre=nombre, nodos_ok=nodos_ok,
                                   hash_sha256=esperado, tamano_bytes=tamano),
-            timeout=PLAZO)
+            timeout=PLAZO, metadata=METADATOS)
     print(f"Confirmado por el coordinador: {r.mensaje}")
 
 def descargar(args):
     nombre = os.path.basename(args.archivo)
     destino = args.destino or f"descargado_{nombre}"
-    ubicacion = ubicar(args.coordinador, nombre, pb.DESCARGAR)
+    ubicacion = ubicar(args.coordinador, nombre, pb.DESCARGAR, accion="descarga")
     print(f"Réplicas según el coordinador: {', '.join(n.nodo_id for n in ubicacion.nodos)}")
 
     for nodo in ubicacion.nodos:
@@ -136,7 +140,7 @@ def eliminar(args):
     nombre = os.path.basename(args.archivo)
     with grpc.insecure_channel(args.coordinador) as canal:
         r = pb_grpc.CoordinadorStub(canal).EliminarArchivo(
-            pb.SolicitudArchivo(nombre=nombre), timeout=PLAZO * 3)
+            pb.SolicitudArchivo(nombre=nombre), timeout=PLAZO * 3, metadata=METADATOS)
     print(f"'{r.nombre}' eliminado de: {', '.join(r.nodos_eliminados) or 'ningún nodo'}")
     if r.nodos_fallidos:
         print(f"  No se pudo borrar en {', '.join(r.nodos_fallidos)} (nodo no disponible)")
