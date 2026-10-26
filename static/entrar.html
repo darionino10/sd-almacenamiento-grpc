@@ -55,6 +55,19 @@
       color: #fff; background: rgba(4, 10, 28, 0.7); border: 1px solid rgba(110, 160, 255, 0.45);
     }
     input:focus { outline: none; border-color: #8fb6ff; box-shadow: 0 0 0 3px rgba(47, 125, 255, 0.25); }
+
+    .campo-clave { position: relative; display: block; margin-top: 6px; }
+    .campo-clave input { margin-top: 0; padding-right: 48px; }
+    .ver {
+      position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+      width: 36px; height: 36px; display: grid; place-items: center; cursor: pointer;
+      color: var(--bruma); background: transparent; border: none; border-radius: 4px;
+    }
+    .ver:hover { color: #fff; background: rgba(47, 125, 255, 0.15); }
+    .ver svg { width: 20px; height: 20px; }
+    .ver .ocultar, .ver[aria-pressed="true"] .mostrar { display: none; }
+    .ver[aria-pressed="true"] .ocultar { display: block; }
+
     .ayuda { display: block; margin-top: 4px; font-size: 12px; font-weight: 400; color: var(--bruma); }
     .error { min-height: 22px; margin: 0 0 10px; font-size: 14px; color: #ff9aaa; }
     .error.exito { color: #8ff0bf; }
@@ -112,8 +125,16 @@
         <span class="ayuda">Tus nombres y apellidos todo pegado, solo letras sin tildes. Si quieres,
           agrega al final un número del 1 al 100.</span>
       </label>
-      <label>Contraseña
-        <input name="contrasena" id="claveNueva" type="password" autocomplete="new-password" required>
+            <label>Contraseña
+        <span class="campo-clave">
+          <input name="contrasena" id="claveNueva" type="password" autocomplete="new-password" required>
+          <button type="button" class="ver" aria-label="Mostrar contraseña" aria-pressed="false">
+            <svg class="mostrar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="ocultar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M3 3l18 18M10.6 5.1A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6C3.9 8.3 2 12 2 12s3.5 7 10 7c1.7 0 3.2-.4 4.5-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+          </button>
+        </span>
       </label>
             <div class="medidor" id="medidor" aria-live="polite">
         <div class="barras"><span></span><span></span><span></span></div>
@@ -126,8 +147,16 @@
         <li data-regla="numero">Un número</li>
         <li data-regla="sinUsuario">Sin tu usuario</li>
       </ul>
-      <label>Repite la contraseña
-        <input name="repetir" type="password" autocomplete="new-password" minlength="10" required>
+            <label>Repite la contraseña
+        <span class="campo-clave">
+          <input name="repetir" type="password" autocomplete="new-password" minlength="10" required>
+          <button type="button" class="ver" aria-label="Mostrar contraseña" aria-pressed="false">
+            <svg class="mostrar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="ocultar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+              <path d="M3 3l18 18M10.6 5.1A10.9 10.9 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-3.2 4.1M6.6 6.6C3.9 8.3 2 12 2 12s3.5 7 10 7c1.7 0 3.2-.4 4.5-1.1M9.9 9.9a3 3 0 0 0 4.2 4.2"/></svg>
+          </button>
+        </span>
       </label>
       <p class="error" role="alert"></p>
       <button class="boton" type="submit">Crear cuenta</button>
@@ -230,6 +259,16 @@ function revisarClave() {
 claveNueva.addEventListener("input", revisarClave);
 usuarioNuevo.addEventListener("input", revisarClave);
 
+// Mostrar u ocultar contraseña (botón del ojo)
+function verClave(boton, mostrarla) {
+  boton.previousElementSibling.type = mostrarla ? "text" : "password";
+  boton.setAttribute("aria-pressed", mostrarla);
+  boton.setAttribute("aria-label", mostrarla ? "Ocultar contraseña" : "Mostrar contraseña");
+}
+for (const boton of document.querySelectorAll(".ver")) {
+  boton.addEventListener("click", () => verClave(boton, boton.getAttribute("aria-pressed") !== "true"));
+}
+
 forms.crear.addEventListener("submit", (e) => {
   e.preventDefault();
   const d = new FormData(forms.crear);
@@ -244,6 +283,7 @@ forms.crear.addEventListener("submit", (e) => {
          "Crear cuenta", (cuenta) => {
     // La cuenta se crea sin iniciar sesión: se pasa a "Iniciar sesión" con el usuario ya escrito
     forms.crear.reset();
+    document.querySelectorAll(".ver").forEach((b) => verClave(b, false));
     revisarClave();
     mostrar("entrar");
     forms.entrar.elements.usuario.value = cuenta.usuario;
