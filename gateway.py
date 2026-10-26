@@ -7,7 +7,9 @@ Uso:
     uvicorn gateway:app --reload --port 8000
     Abrir http://localhost:8000  (documentación de la API en /docs)
 """
+import asyncio
 import hashlib
+import json
 import os
 
 import grpc
@@ -59,9 +61,19 @@ async def exigir_sesion(request: Request, siguiente):
     """Toda la API, salvo crear cuenta e iniciar sesión, exige una sesión válida."""
     ruta = request.url.path
     if ruta.startswith("/api/") and ruta not in RUTAS_PUBLICAS:
-        if not cuentas.usuario_de_sesion(request.cookies.get(COOKIE)):
+        usuario = cuentas.usuario_de_sesion(request.cookies.get(COOKIE))
+        if not usuario:
             return JSONResponse(status_code=401, content={"detail": "Inicia sesión para continuar"})
+        request.state.usuario = usuario["usuario"]   # para enviarlo al coordinador
     return await siguiente(request)
+
+
+def metadatos(request: Request, accion: str = ""):
+    """Metadatos gRPC con el usuario de la sesión (y la acción, si aplica)."""
+    datos = [("usuario", request.state.usuario)]
+    if accion:
+        datos.append(("accion", accion))
+    return datos
 
 
 # ---------------- modelos de respuesta (documentación de /docs) ----------------
@@ -241,10 +253,12 @@ def listar_archivos():
 
 @app.delete("/api/archivos/{nombre}", tags=["Archivos"], response_model=ResultadoEliminacion,
             responses={**NO_ENCONTRADO, **NO_DISPONIBLE}, summary="Eliminar un archivo")
-def eliminar(nombre: str):
+def eliminar(nombre: str, request: Request):
+
     """Elimina el archivo de todas sus réplicas y del índice del coordinador."""
     try:
-        r = coordinador().EliminarArchivo(pb.SolicitudArchivo(nombre=nombre), timeout=PLAZO * 3)
+        r = coordinador().EliminarArchivo(pb.SolicitudArchivo(nombre=nombre), timeout=PLAZO * 3,
+                                          metadata=metadatos(request))
     except grpc.RpcError as e:
         raise error_http(e)
     return {"nombre": r.nombre, "eliminados": list(r.nodos_eliminados),
@@ -255,7 +269,7 @@ def eliminar(nombre: str):
           responses={400: {"model": Error, "description": "El archivo no tiene nombre"},
                      **NO_DISPONIBLE},
           summary="Subir un archivo a dos réplicas")
-def subir(archivo: UploadFile = File(...)):
+def subir(request: Request, archivo: UploadFile = File(...)):
     """Sube un archivo a los nodos que asigne el coordinador (streaming gRPC)."""
     nombre = os.path.basename(archivo.filename or "")
     if not nombre:
@@ -303,7 +317,7 @@ def subir(archivo: UploadFile = File(...)):
         coordinador().ConfirmarSubida(
             pb.ConfirmacionSubida(nombre=nombre, nodos_ok=nodos_ok,
                                   hash_sha256=esperado, tamano_bytes=tamano),
-            timeout=PLAZO)
+            timeout=PLAZO, metadata=metadatos(request))
     except grpc.RpcError as e:
         raise error_http(e)
     return {"nombre": nombre, "sha256": esperado, "resultados": resultados,
@@ -339,11 +353,12 @@ def info(nombre: str):
                                          "no respondieron."},
                     **NO_ENCONTRADO, **NO_DISPONIBLE},
          summary="Descargar desde la primera réplica disponible")
-def descargar(nombre: str):
+def descargar(nombre: str, request: Request):
     """Descarga desde la primera réplica disponible; si una falla, prueba la siguiente."""
     try:
         ubicacion = coordinador().UbicarArchivo(
-            pb.SolicitudUbicacion(nombre=nombre, operacion=pb.DESCARGAR), timeout=PLAZO)
+            pb.SolicitudUbicacion(nombre=nombre, operacion=pb.DESCARGAR), timeout=PLAZO,
+            metadata=metadatos(request, "descarga"))
     except grpc.RpcError as e:
         raise error_http(e)
 
@@ -377,3 +392,35 @@ def descargar(nombre: str):
                                  headers=cabeceras)
 
     raise HTTPException(503, f"Ninguna réplica respondió ({', '.join(fallidos)})")
+
+    
+@app.get("/api/eventos", tags=["Nodos"], responses={401: {"model": Error}},
+         summary="Actividad del sistema en tiempo real (Server-Sent Events)")
+async def eventos(request: Request):
+    """Reenvía al navegador la suscripción gRPC SuscribirEventos del coordinador.
+    Primero llegan los últimos 50 eventos y luego cada evento nuevo al instante."""
+    canal = grpc.insecure_channel(COORDINADOR)
+    flujo = pb_grpc.CoordinadorStub(canal).SuscribirEventos(pb.SolicitudEventos(ultimos=50))
+
+    async def emitir():
+        try:
+            while not await request.is_disconnected():
+                try:
+                    evento = await asyncio.to_thread(next, flujo, None)
+                except grpc.RpcError:
+                    yield "event: caida\ndata: {}\n\n"   # el coordinador no está disponible
+                    break
+                if evento is None:
+                    break
+                if evento.tipo == "latido":
+                    yield ": latido\n\n"                  # comentario SSE: mantiene la conexión
+                    continue
+                datos = {"id": evento.id, "fecha": evento.fecha, "tipo": evento.tipo,
+                         "detalle": evento.detalle, "usuario": evento.usuario}
+                yield f"id: {evento.id}\ndata: {json.dumps(datos, ensure_ascii=False)}\n\n"
+        finally:
+            flujo.cancel()
+            canal.close()
+
+    return StreamingResponse(emitir(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

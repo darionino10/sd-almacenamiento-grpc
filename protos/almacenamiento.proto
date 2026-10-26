@@ -13,7 +13,7 @@ service NodoAlmacenamiento {
   rpc DescargarArchivo (SolicitudArchivo) returns (stream Fragmento);
   // Devuelve los metadatos de un archivo guardado en el nodo.
   rpc ConsultarMetadatos (SolicitudArchivo) returns (Metadatos);
-    // Borra el archivo y sus metadatos del nodo.
+  // Borra el archivo y sus metadatos del nodo.
   rpc EliminarArchivo (SolicitudArchivo) returns (RespuestaRegistro);
 }
 
@@ -26,12 +26,14 @@ service Coordinador {
   rpc UbicarArchivo (SolicitudUbicacion) returns (Ubicacion);
   // Lista todos los archivos conocidos y sus réplicas.
   rpc ListarArchivos (Vacio) returns (ListaArchivos);
-    // Devuelve el estado (vivo o caído) de cada nodo registrado.
+  // Devuelve el estado (vivo o caído) de cada nodo registrado.
   rpc EstadoNodos (Vacio) returns (ListaNodos);
-    // El cliente informa en qué nodos terminó bien la subida.
+  // El cliente informa en qué nodos terminó bien la subida.
   rpc ConfirmarSubida (ConfirmacionSubida) returns (RespuestaRegistro);
-    // Elimina un archivo de todas sus réplicas y del índice.
+  // Elimina un archivo de todas sus réplicas y del índice.
   rpc EliminarArchivo (SolicitudArchivo) returns (ResultadoEliminacion);
+  // Envía los eventos recientes de la bitácora y luego cada evento nuevo (streaming del servidor).
+  rpc SuscribirEventos (SolicitudEventos) returns (stream Evento);
 }
 
 // ---------- Mensajes del nodo ----------
@@ -106,6 +108,7 @@ message EntradaArchivo {
 message ListaArchivos {
   repeated EntradaArchivo archivos = 1;
 }
+
 message EstadoNodo {
   string nodo_id = 1;
   string direccion = 2;
@@ -116,14 +119,28 @@ message EstadoNodo {
 message ListaNodos {
   repeated EstadoNodo nodos = 1;
 }
+
 message ConfirmacionSubida {
   string nombre = 1;
   repeated string nodos_ok = 2;  // nodos donde la subida terminó bien
   string hash_sha256 = 3;
   int64 tamano_bytes = 4;
 }
+
 message ResultadoEliminacion {
   string nombre = 1;
   repeated string nodos_eliminados = 2;  // réplicas borradas
   repeated string nodos_fallidos = 3;    // réplicas que no se pudieron borrar (nodo caído)
+}
+
+message SolicitudEventos {
+  int32 ultimos = 1;             // cuántos eventos del historial enviar primero
+}
+
+message Evento {
+  int64 id = 1;
+  string fecha = 2;
+  string tipo = 3;               // nodo_caido, archivo_subido, ... ("latido" = mantener la conexión)
+  string detalle = 4;
+  string usuario = 5;            // quién hizo la acción, si aplica
 }

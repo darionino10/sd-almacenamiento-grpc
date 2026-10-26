@@ -61,6 +61,7 @@
                     box-shadow: 0 0 8px var(--vivo); }
     .reloj.reconectando .punto { background: #ffb020; box-shadow: 0 0 8px #ffb020; }
     .reloj.sin-conexion .punto { background: var(--caido); box-shadow: 0 0 8px var(--caido); }
+ 
     .cuenta-usuario {
       position: absolute; top: 18px; right: 22px; display: flex; align-items: center; gap: 12px;
       font-size: 14px; color: var(--bruma);
@@ -70,6 +71,7 @@
     .cuenta-usuario .rol { font-size: 12px; padding: 1px 8px; border-radius: 999px;
                            border: 1px solid var(--neon-suave); }
     .cuenta-usuario .boton { padding: 6px 12px; font-size: 13px; }
+ 
     main { max-width: 1180px; margin: 0 auto; padding: 24px 20px 120px; }
  
     /* ---------- marco neón (paneles) ---------- */
@@ -206,11 +208,16 @@
     }
     .lateral.abierto { transform: none; }
     .lateral .barra { border-radius: 0; }
-    .lateral .cerrar { margin-left: auto; }
+    .lateral .cerrar { margin-left: 12px; }
     .eventos { list-style: none; margin: 0; padding: 8px 18px 24px; overflow-y: auto; flex: 1; }
     .evento { display: grid; grid-template-columns: 72px 1fr; gap: 10px; padding: 10px 0;
               border-bottom: 1px solid rgba(47, 125, 255, 0.14); font-size: 14px; }
     .evento time { font-family: var(--mono); font-size: 12px; color: var(--bruma); padding-top: 2px; }
+    .evento b { color: #fff; font-weight: 600; }
+    .en-vivo { margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+               font-size: 12px; color: var(--bruma); }
+    .en-vivo::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: #ffb020; }
+    .en-vivo.conectado::before { background: var(--vivo); box-shadow: 0 0 8px var(--vivo); }
     .evento.exito span { color: #8ff0bf; }
     .evento.error span { color: #ff9aaa; }
     .evento.aviso span { color: #ffd27a; }
@@ -246,12 +253,12 @@
       .acciones { flex-direction: row; }
       .boton-actividad { right: 16px; bottom: 16px; padding: 12px 18px; }
       .nodos { grid-template-columns: repeat(auto-fit, minmax(104px, 1fr)); gap: 10px; }
+      .encabezado { padding-top: 64px; }
+      .cuenta-usuario { left: 16px; right: 16px; top: 14px; justify-content: space-between; }
       .nodo { padding: 12px; }
       .nodo h3 { font-size: 16px; }
       .nodo .estado { font-size: 12px; padding: 2px 9px; }
-        .nodo .archivos { font-size: 12px; }
-      .encabezado { padding-top: 64px; }
-      .cuenta-usuario { left: 16px; right: 16px; top: 14px; justify-content: space-between; }
+      .nodo .archivos { font-size: 12px; }
     }
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { transition: none !important; animation: none !important; }
@@ -265,7 +272,8 @@
     <span><strong id="nombreUsuario"></strong> <span class="rol" id="rolUsuario"></span></span>
     <button class="boton" id="btnSalir">Cerrar sesión</button>
   </div>
-  <h1>Almacenamiento distribuido</h1>  <p class="sub">Archivos replicados en varios nodos, comunicados por gRPC</p>
+  <h1>Almacenamiento distribuido</h1>
+  <p class="sub">Archivos replicados en varios nodos, comunicados por gRPC</p>
   <div class="reloj" id="reloj"><span class="punto"></span><span id="actualizado">Conectando…</span></div>
 </header>
  
@@ -311,10 +319,11 @@
  
 <div class="velo" id="velo"></div>
 <aside class="lateral" id="lateral" aria-label="Actividad del sistema">
-  <div class="barra"><span class="puntos"></span><h2>Actividad</h2>
+  <div class="barra"><span class="puntos"></span><h2>Actividad del sistema</h2>
+    <span class="en-vivo" id="enVivo">Conectando…</span>
     <button class="boton cerrar" id="btnCerrar">Cerrar</button></div>
   <ul class="eventos" id="eventos">
-    <li class="mensaje-vacio">Aquí aparecerán las subidas, descargas y cambios de los nodos.</li>
+    <li class="mensaje-vacio">Aquí aparecerán las subidas, descargas y cambios de los nodos de todos los usuarios.</li>
   </ul>
 </aside>
  
@@ -350,25 +359,70 @@ let eventos = [];
 let sinVer = 0;
  
 // ---------------- actividad y avisos ----------------
-function registrar(texto, tipo = "info") {
-  eventos.unshift({ hora: hora24(), texto, tipo });
-  eventos = eventos.slice(0, 60);
+// La actividad viene de la bitácora del coordinador: es la misma para todos los usuarios
+const TIPO_EVENTO = {
+  archivo_subido: "exito", nodo_conectado: "exito", nodo_volvio: "exito", nodo_registrado: "exito",
+  nodo_caido: "error", subida_parcial: "aviso", copia_huerfana: "aviso",
+};
+let miUsuario = "";
+ 
+function horaEvento(fecha) {
+  const [dia, hora] = fecha.split("T");
+  const hoy = new Date().toLocaleDateString("sv");      // AAAA-MM-DD
+  return dia === hoy ? hora : `${dia.slice(8, 10)}/${dia.slice(5, 7)} ${hora.slice(0, 5)}`;
+}
+ 
+function pintarEventos() {
+  $("eventos").innerHTML = eventos.map((e) => `
+    <li class="evento ${TIPO_EVENTO[e.tipo] || "info"}">
+      <time>${horaEvento(e.fecha)}</time>
+      <span>${e.usuario ? `<b>${escapar(e.usuario)}</b> ` : ""}${escapar(e.detalle)}</span>
+    </li>`).join("");
+}
+ 
+function recibirEvento(e, esNuevo) {
+  if (eventos.some((x) => x.id === e.id)) return;        // ya estaba (p. ej. tras reconectar)
+  eventos.unshift(e);
+  eventos.sort((a, b) => b.id - a.id);
+  eventos = eventos.slice(0, 80);
+  pintarEventos();
+  if (!esNuevo) return;
   if (!$("lateral").classList.contains("abierto")) {
     sinVer++;
     $("insignia").textContent = sinVer;
     $("insignia").hidden = false;
   }
-  $("eventos").innerHTML = eventos.map((e) =>
-    `<li class="evento ${e.tipo}"><time>${e.hora}</time><span>${escapar(e.texto)}</span></li>`).join("");
+  // Las acciones propias ya muestran su aviso; aquí se avisan las de otros y las del sistema
+  if (e.usuario !== miUsuario) avisar(`${e.usuario ? e.usuario + " " : ""}${e.detalle}`, TIPO_EVENTO[e.tipo] || "info");
+  actualizar();                                         // refresca nodos y archivos al instante
 }
  
+// Avisos flotantes (solo en este navegador)
 function avisar(texto, tipo = "info") {
-  registrar(texto, tipo);
   const div = document.createElement("div");
   div.className = `aviso-flotante ${tipo}`;
   div.textContent = texto;
   $("avisos").prepend(div);
   setTimeout(() => div.remove(), 4500);
+}
+ 
+// Conexión en tiempo real con la bitácora (Server-Sent Events)
+function conectarEventos() {
+  const fuente = new EventSource("/api/eventos");
+  let historial = true;                                  // los primeros eventos son el historial
+  fuente.onopen = () => {
+    $("enVivo").textContent = "En vivo";
+    $("enVivo").classList.add("conectado");
+    historial = true;
+    setTimeout(() => { historial = false; }, 1500);
+  };
+  fuente.onmessage = (m) => recibirEvento(JSON.parse(m.data), !historial);
+  fuente.onerror = () => {
+    $("enVivo").textContent = "Reconectando…";
+    $("enVivo").classList.remove("conectado");
+    // El navegador reintenta solo; si la conexión quedó cerrada, se abre una nueva
+    if (fuente.readyState === EventSource.CLOSED) setTimeout(conectarEventos, 3000);
+  };
 }
  
 function abrirActividad(abrir) {
@@ -389,7 +443,7 @@ async function pedirJSON(url, opciones = {}, plazoMs = 10000) {
   const temporizador = setTimeout(() => control.abort(), plazoMs);
   try {
     const r = await fetch(url, { ...opciones, signal: control.signal });
-        if (r.status === 401) { location.href = "/entrar"; throw new Error("la sesión terminó"); }
+    if (r.status === 401) { location.href = "/entrar"; throw new Error("la sesión terminó"); }
     const datos = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(datos.detail || `HTTP ${r.status}`);
     return datos;
@@ -408,13 +462,7 @@ async function cargarNodos() {
     $("nodos").innerHTML = '<p class="mensaje-vacio">Ningún nodo se ha registrado todavía. Inicia al menos uno.</p>';
     return;
   }
-  for (const n of nodos) {
-    if (n.id in estadoNodos && estadoNodos[n.id] !== n.vivo) {
-      avisar(`${n.id.toUpperCase()} ${n.vivo ? "volvió a estar activo" : "dejó de responder"}`,
-             n.vivo ? "exito" : "error");
-    }
-    estadoNodos[n.id] = n.vivo;
-  }
+  for (const n of nodos) estadoNodos[n.id] = n.vivo;
   $("nodos").innerHTML = nodos.map((n) => `
     <article class="nodo ${n.vivo ? "activo" : "inactivo"}">
       <h3>${escapar(n.id.toUpperCase())}</h3>
@@ -498,12 +546,12 @@ $("btnSubir").addEventListener("click", () => {
   xhr.onload = () => {
     let r = {};
     try { r = JSON.parse(xhr.responseText); } catch {}
-        if (xhr.status === 401) { location.href = "/entrar"; return; }
+    if (xhr.status === 401) { location.href = "/entrar"; return; }
     if (xhr.status >= 400) {
       avisar(`No se pudo subir: ${r.detail || "error " + xhr.status}`, "error");
     } else {
       for (const res of r.resultados) {
-        if (!res.ok) registrar(`${r.nombre}: falló en ${res.nodo.toUpperCase()} (${res.error})`, "error");
+        if (!res.ok) avisar(`${r.nombre}: falló en ${res.nodo.toUpperCase()} (${res.error})`, "error");
       }
       avisar(`${r.nombre} guardado en ${r.confirmados.map((n) => n.toUpperCase()).join(" y ")}`, "exito");
     }
@@ -520,7 +568,7 @@ async function descargar(nombre, boton) {
   boton.disabled = true;
   try {
     const r = await fetch(`/api/descargar/${encodeURIComponent(nombre)}`);
-        if (r.status === 401) { location.href = "/entrar"; return; }
+    if (r.status === 401) { location.href = "/entrar"; return; }
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
     const fallidos = r.headers.get("X-Nodos-Fallidos");
     const blob = await r.blob();
@@ -570,7 +618,7 @@ function eliminar(nombre) {
       const r = await pedirJSON(`/api/archivos/${encodeURIComponent(nombre)}`, { method: "DELETE" });
       avisar(`${r.nombre} eliminado de ${r.eliminados.map((n) => n.toUpperCase()).join(" y ") || "ningún nodo"}`, "exito");
       if (r.fallidos.length)
-        registrar(`${r.nombre}: quedó una copia en ${r.fallidos.join(", ").toUpperCase()} (nodo inactivo)`, "aviso");
+        avisar(`${r.nombre}: quedó una copia en ${r.fallidos.join(", ").toUpperCase()} (nodo inactivo)`, "aviso");
       actualizar();
     } catch (e) {
       avisar(`No se pudo eliminar ${nombre}: ${e.message}`, "error");
@@ -597,7 +645,7 @@ async function actualizar() {
     $("reloj").className = fallosSeguidos >= 3 ? "reloj sin-conexion" : "reloj reconectando";
     $("actualizado").textContent = fallosSeguidos >= 3
       ? `Sin conexión: ${e.message}` : `Reconectando… (intento ${fallosSeguidos})`;
-    if (fallosSeguidos === 3) registrar(`Se perdió la conexión con el sistema: ${e.message}`, "error");
+    if (fallosSeguidos === 3) avisar(`Se perdió la conexión con el sistema: ${e.message}`, "error");
   } finally {
     actualizando = false;
   }
@@ -607,6 +655,7 @@ async function actualizar() {
 async function cargarUsuario() {
   try {
     const u = await pedirJSON("/api/sesion");
+    miUsuario = u.usuario;
     $("nombreUsuario").textContent = u.usuario;
     $("rolUsuario").textContent = u.rol === "administrador" ? "Administrador" : "Usuario";
     $("cuentaUsuario").hidden = false;
@@ -616,10 +665,10 @@ $("btnSalir").addEventListener("click", async () => {
   await fetch("/api/sesion", { method: "DELETE" }).catch(() => {});
   location.href = "/entrar";
 });
-
-cargarUsuario();
+ 
+cargarUsuario().then(conectarEventos);
 actualizar();
-setInterval(actualizar, 2000);
+setInterval(actualizar, 10000);   // respaldo: los cambios llegan al instante por los eventos
 </script>
 </body>
 </html>

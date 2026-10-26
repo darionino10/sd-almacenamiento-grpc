@@ -12,6 +12,7 @@ Uso:
 import argparse
 import logging
 import os
+import queue
 import threading
 import time
 from concurrent import futures
@@ -27,6 +28,18 @@ from indice import Indice
 CARPETA = "datos_coordinador"
 RUTA_BD = os.path.join(CARPETA, "coordinador.db")
 RUTA_JSON_ANTERIOR = os.path.join(CARPETA, "indice.json")
+LATIDO = 10   # segundos sin eventos tras los que se envía un "latido" para mantener viva la conexión
+
+
+def lista(nodos):
+    """['nodo3', 'nodo1'] -> 'NODO3 y NODO1'"""
+    nombres = [n.upper() for n in nodos]
+    return " y ".join([", ".join(nombres[:-1]), nombres[-1]]) if len(nombres) > 1 else "".join(nombres)
+
+
+def usuario_de(context):
+    """Usuario que hizo la llamada, enviado por el gateway o el cliente en los metadatos gRPC."""
+    return dict(context.invocation_metadata()).get("usuario", "anónimo")
 
 
 class CoordinadorServicer(pb_grpc.CoordinadorServicer):
@@ -35,6 +48,8 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
         self.candado = threading.Lock()
         self.indice = Indice(RUTA_BD)
         migrados = self.indice.migrar_json(RUTA_JSON_ANTERIOR)
+        self.suscriptores = set()            # colas de los paneles suscritos a eventos
+        self.candado_suscriptores = threading.Lock()
         if migrados:
             self._evento("migracion", f"Se importaron {migrados} archivo(s) desde indice.json")
         # El estado vivo/caído solo vive en memoria: al arrancar, todos empiezan como caídos
@@ -45,10 +60,14 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
         self._evento("coordinador_iniciado",
                      f"Coordinador iniciado con {len(self.nodos)} nodo(s) conocido(s)")
 
-    def _evento(self, tipo, detalle, nivel=logging.INFO):
-        """Escribe el evento en la bitácora (SQLite) y en el registro de la terminal."""
-        self.indice.evento(tipo, detalle)
-        logging.log(nivel, detalle)
+    def _evento(self, tipo, detalle, nivel=logging.INFO, usuario=""):
+        """Guarda el evento en la bitácora (SQLite), lo muestra en la terminal y lo envía
+        a todos los suscriptores (paneles abiertos)."""
+        evento = self.indice.evento(tipo, detalle, usuario)
+        logging.log(nivel, f"{usuario} {detalle}" if usuario else detalle)
+        with self.candado_suscriptores:
+            for cola in self.suscriptores:
+                cola.put(evento)
 
     def _info(self, nodo_id):
         return pb.InfoNodo(nodo_id=nodo_id, direccion=self.nodos[nodo_id]["direccion"])
@@ -63,13 +82,12 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
             self.indice.guardar_nodo(request.nodo_id, request.direccion)
         if anterior is None:
             self._evento("nodo_registrado",
-                         f"Nodo registrado: {request.nodo_id} en {request.direccion}")
+                         f"{request.nodo_id.upper()} se registró en {request.direccion}")
         elif not visto:
             # Ya era conocido, pero es su primera conexión desde que arrancó el coordinador
-            self._evento("nodo_conectado", f"Nodo {request.nodo_id} conectado en {request.direccion}")
+            self._evento("nodo_conectado", f"{request.nodo_id.upper()} conectado")
         elif not anterior["vivo"]:
-            self._evento("nodo_volvio",
-                         f"Nodo {request.nodo_id} VOLVIÓ a estar disponible (se registró de nuevo)",
+            self._evento("nodo_volvio", f"{request.nodo_id.upper()} volvió a estar disponible",
                          logging.WARNING)
         return pb.RespuestaRegistro(ok=True, mensaje=f"{request.nodo_id} registrado")
 
@@ -94,16 +112,18 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                              nombre, elegidos)
                 return pb.Ubicacion(nombre=nombre, nodos=[self._info(i) for i in elegidos])
 
-            # DESCARGAR
+            # DESCARGAR (también se usa para consultar la información de un archivo)
             replicas = self.indice.replicas(nombre)
             if replicas is None:
                 context.abort(grpc.StatusCode.NOT_FOUND,
                               f"El coordinador no conoce el archivo '{nombre}'")
             # Primero los nodos vivos; los caídos quedan al final como último intento.
             ordenados = sorted(replicas, key=lambda i: not self.nodos.get(i, {}).get("vivo"))
-            logging.info("Descarga de '%s': réplicas %s", nombre, ordenados)
-            return pb.Ubicacion(nombre=nombre,
-                                nodos=[self._info(i) for i in ordenados if i in self.nodos])
+            ubicacion = pb.Ubicacion(nombre=nombre,
+                                     nodos=[self._info(i) for i in ordenados if i in self.nodos])
+        if dict(context.invocation_metadata()).get("accion") == "descarga":
+            self._evento("archivo_descargado", f"descargó '{nombre}'", usuario=usuario_de(context))
+        return ubicacion
 
     def ConfirmarSubida(self, request, context):
         nombre = os.path.basename(request.nombre)
@@ -120,12 +140,13 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
             self.indice.registrar_archivo(nombre, confirmados, request.tamano_bytes,
                                           request.hash_sha256)
         fallidos = [i for i in asignados if i not in confirmados]
+        usuario = usuario_de(context)
         if fallidos:
-            self._evento("subida_parcial", f"Subida de '{nombre}' confirmada solo en {confirmados} "
-                                           f"(falló en {fallidos})", logging.WARNING)
+            self._evento("subida_parcial", f"subió '{nombre}' solo a {lista(confirmados)}; "
+                                           f"falló en {lista(fallidos)}", logging.WARNING, usuario)
         else:
-            self._evento("archivo_subido", f"Subida de '{nombre}' confirmada en {confirmados} "
-                                           f"({request.tamano_bytes} bytes)")
+            self._evento("archivo_subido", f"subió '{nombre}' a {lista(confirmados)} "
+                                           f"({request.tamano_bytes} bytes)", usuario=usuario)
         return pb.RespuestaRegistro(
             ok=True, mensaje=f"'{nombre}' registrado en {', '.join(confirmados)}")
 
@@ -154,14 +175,36 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
 
         with self.candado:
             self.indice.eliminar_archivo(nombre)
+        usuario = usuario_de(context)
         if fallidos:
-            self._evento("copia_huerfana", f"Archivo '{nombre}' eliminado de {eliminados}; quedó una "
-                                           f"copia huérfana en {fallidos} (nodo no disponible)",
-                         logging.WARNING)
+            self._evento("copia_huerfana", f"eliminó '{nombre}' de {lista(eliminados) or 'ningún nodo'}; "
+                                           f"quedó una copia en {lista(fallidos)} (nodo caído)",
+                         logging.WARNING, usuario)
         else:
-            self._evento("archivo_eliminado", f"Archivo '{nombre}' eliminado de {eliminados}")
+            self._evento("archivo_eliminado", f"eliminó '{nombre}' de {lista(eliminados)}",
+                         usuario=usuario)
         return pb.ResultadoEliminacion(nombre=nombre, nodos_eliminados=eliminados,
                                        nodos_fallidos=fallidos)
+
+    def SuscribirEventos(self, request, context):
+        """Streaming del servidor: historial reciente y luego cada evento nuevo."""
+        cola = queue.Queue()
+        with self.candado_suscriptores:
+            self.suscriptores.add(cola)
+        logging.info("Nuevo suscriptor de eventos (%d en total)", len(self.suscriptores))
+        try:
+            for evento in reversed(self.indice.eventos(request.ultimos or 50)):
+                yield pb.Evento(**evento)
+            while context.is_active():
+                try:
+                    evento = cola.get(timeout=LATIDO)
+                except queue.Empty:
+                    yield pb.Evento(tipo="latido")   # mantiene la conexión abierta
+                    continue
+                yield pb.Evento(**evento)
+        finally:
+            with self.candado_suscriptores:
+                self.suscriptores.discard(cola)
 
     def ListarArchivos(self, request, context):
         entradas = [pb.EntradaArchivo(nombre=n, nodos=r) for n, r in self.indice.archivos().items()]
@@ -180,8 +223,8 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
         """Hace Ping a cada nodo periódicamente y actualiza si está vivo."""
         while True:
             with self.candado:
-                lista = list(self.nodos.items())
-            for nodo_id, nodo in lista:
+                nodos_actuales = list(self.nodos.items())
+            for nodo_id, nodo in nodos_actuales:
                 try:
                     with grpc.insecure_channel(nodo["direccion"]) as canal:
                         pb_grpc.NodoAlmacenamientoStub(canal).Ping(
@@ -199,12 +242,12 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                         cambio = True
                 if cambio:
                     if vivo and not visto:
-                        self._evento("nodo_conectado", f"Nodo {nodo_id} conectado")
+                        self._evento("nodo_conectado", f"{nodo_id.upper()} conectado")
                     elif vivo:
-                        self._evento("nodo_volvio", f"Nodo {nodo_id} VOLVIÓ a estar disponible",
+                        self._evento("nodo_volvio", f"{nodo_id.upper()} volvió a estar disponible",
                                      logging.WARNING)
                     else:
-                        self._evento("nodo_caido", f"Nodo {nodo_id} NO RESPONDE (caído)",
+                        self._evento("nodo_caido", f"{nodo_id.upper()} dejó de responder",
                                      logging.WARNING)
             time.sleep(INTERVALO_SALUD)
 
@@ -217,7 +260,8 @@ def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [coordinador] %(message)s")
 
     servicer = CoordinadorServicer()
-    servidor = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    # Cada panel abierto mantiene una suscripción de eventos ocupando un hilo
+    servidor = grpc.server(futures.ThreadPoolExecutor(max_workers=32))
     pb_grpc.add_CoordinadorServicer_to_server(servicer, servidor)
     servidor.add_insecure_port(f"[::]:{args.puerto}")
     servidor.start()
