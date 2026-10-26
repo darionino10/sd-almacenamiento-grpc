@@ -120,9 +120,9 @@ class DatosCuenta(BaseModel):
     usuario: str = Field(examples=["senendarionino10"],
                          description="Nombres y apellidos todo pegado, solo letras, y opcionalmente "
                                      "un número del 1 al 100 al final")
-    contrasena: str = Field(examples=["Almacen2026"],
-                            description="Mínimo 8 caracteres, con una mayúscula, una minúscula y un número")
-
+    contrasena: str = Field(examples=["NubeAzul.Tunja7"],
+                            description="Mínimo 10 caracteres, con una mayúscula, una minúscula y un "
+                                        "número; no puede contener el usuario ni ser una contraseña común")
 
 class DatosSesion(BaseModel):
     usuario: str

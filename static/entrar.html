@@ -63,6 +63,17 @@
     .requisitos li::before { content: "○"; display: inline-block; width: 18px; color: var(--bruma); }
     .requisitos li.cumple { color: #8ff0bf; }
     .requisitos li.cumple::before { content: "●"; color: #17c47a; }
+        .medidor { display: flex; align-items: center; gap: 10px; margin: -2px 0 12px; font-size: 13px; }
+    .medidor .barras { flex: 1; display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+    .medidor .barras span { height: 5px; border-radius: 3px; background: rgba(110, 160, 255, 0.18);
+                            transition: background-color 0.2s, box-shadow 0.2s; }
+    .medidor .texto { min-width: 70px; text-align: right; color: var(--bruma); }
+    .medidor.debil .barras span:nth-child(-n+1) { background: #ff4560; box-shadow: 0 0 8px #ff4560; }
+    .medidor.debil .texto { color: #ff9aaa; }
+    .medidor.aceptable .barras span:nth-child(-n+2) { background: #ffb020; box-shadow: 0 0 8px #ffb020; }
+    .medidor.aceptable .texto { color: #ffd27a; }
+    .medidor.fuerte .barras span { background: #17c47a; box-shadow: 0 0 8px #17c47a; }
+    .medidor.fuerte .texto { color: #8ff0bf; }
     .boton {
       width: 100%; padding: 12px; border-radius: 5px; cursor: pointer; font-weight: 600; color: #fff;
       background: linear-gradient(180deg, #3d8bff, #1f5fe0); border: none;
@@ -104,14 +115,19 @@
       <label>Contraseña
         <input name="contrasena" id="claveNueva" type="password" autocomplete="new-password" required>
       </label>
-      <ul class="requisitos" id="requisitos" aria-live="polite">
-        <li data-regla="largo">8 caracteres o más</li>
+            <div class="medidor" id="medidor" aria-live="polite">
+        <div class="barras"><span></span><span></span><span></span></div>
+        <span class="texto" id="textoMedidor"></span>
+      </div>
+      <ul class="requisitos" id="requisitos">
+        <li data-regla="largo">10 caracteres o más</li>
         <li data-regla="mayus">Una mayúscula</li>
         <li data-regla="minus">Una minúscula</li>
         <li data-regla="numero">Un número</li>
+        <li data-regla="sinUsuario">Sin tu usuario</li>
       </ul>
       <label>Repite la contraseña
-        <input name="repetir" type="password" autocomplete="new-password" minlength="8" required>
+        <input name="repetir" type="password" autocomplete="new-password" minlength="10" required>
       </label>
       <p class="error" role="alert"></p>
       <button class="boton" type="submit">Crear cuenta</button>
@@ -173,13 +189,31 @@ usuarioNuevo.addEventListener("input", () => {
 });
 
 // Contraseña: se marcan los requisitos a medida que se escribe
+// Contraseña: se marcan los requisitos a medida que se escribe
+const letrasUsuario = () => usuarioNuevo.value.replace(/[0-9]+$/, "");
 const REGLAS = {
-  largo: (c) => c.length >= 8,
+  largo: (c) => c.length >= 10,
   mayus: (c) => /[A-Z]/.test(c),
   minus: (c) => /[a-z]/.test(c),
   numero: (c) => /[0-9]/.test(c),
+  sinUsuario: (c) => c.length > 0 && (letrasUsuario().length < 4 || !c.toLowerCase().includes(letrasUsuario())),
 };
 const claveNueva = document.getElementById("claveNueva");
+
+// Medidor de seguridad: largo y variedad de caracteres (débil, aceptable, fuerte)
+function fuerza(c) {
+  if (!c) return "";
+  let puntos = 0;
+  if (c.length >= 10) puntos++;
+  if (c.length >= 14) puntos++;
+  if (c.length >= 18) puntos++;
+  const tipos = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter((r) => r.test(c)).length;
+  puntos += Math.max(0, tipos - 2);
+  if (/(.)\1\1/.test(c)) puntos--;          // tres caracteres iguales seguidos
+  if (!REGLAS.sinUsuario(c)) puntos = 0;
+  return puntos >= 4 ? "fuerte" : puntos >= 2 ? "aceptable" : "debil";
+}
+
 function revisarClave() {
   let todas = true;
   for (const li of document.querySelectorAll("#requisitos li")) {
@@ -187,9 +221,14 @@ function revisarClave() {
     li.classList.toggle("cumple", cumple);
     todas = todas && cumple;
   }
+  const nivel = fuerza(claveNueva.value);
+  document.getElementById("medidor").className = `medidor ${nivel}`;
+  document.getElementById("textoMedidor").textContent =
+    { debil: "Débil", aceptable: "Aceptable", fuerte: "Fuerte" }[nivel] || "";
   return todas;
 }
 claveNueva.addEventListener("input", revisarClave);
+usuarioNuevo.addEventListener("input", revisarClave);
 
 forms.crear.addEventListener("submit", (e) => {
   e.preventDefault();

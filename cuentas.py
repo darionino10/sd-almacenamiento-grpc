@@ -21,6 +21,22 @@ RUTA_BD = os.path.join(config.CARPETA_GATEWAY, "usuarios.db")
 PATRON_USUARIO = re.compile(r"^[a-z]{4,40}([1-9][0-9]?|100)?$")
 _candado = threading.Lock()
 
+LARGO_MINIMO = 10
+# Palabras de las contraseñas más usadas. Se rechaza una contraseña si sus letras forman una de
+# estas palabras o contienen una de 6 letras o más (por ejemplo "Colombia2026!" -> "colombia").
+BASES_COMUNES = {
+    "password", "passw0rd", "contrasena", "contraseña", "clave", "secreto", "qwerty", "qwertyuiop",
+    "asdfgh", "asdfghjkl", "zxcvbn", "abc", "abcd", "abcdef", "abcdefg", "abcdefgh", "admin",
+    "administrador", "root", "usuario", "user", "login", "welcome", "bienvenido", "hola", "holamundo",
+    "iloveyou", "teamo", "amor", "amorcito", "princesa", "princess", "dragon", "monkey", "letmein",
+    "sunshine", "master", "superman", "batman", "pokemon", "football", "futbol", "baseball",
+    "colombia", "bogota", "tunja", "boyaca", "medellin", "cali", "millonarios", "nacional",
+    "america", "santafe", "junior", "jdc", "juandecastellanos", "universidad", "estudiante",
+    "sistemas", "distribuidos", "almacenamiento", "almacen", "archivos", "grpc", "python",
+    "computador", "internet",
+}
+SECUENCIAS = ("0123456789", "1234567890", "abcdefghijklmnopqrstuvwxyz", "qwertyuiop", "asdfghjkl")
+
 
 class ErrorCuenta(Exception):
     """Error de validación al crear una cuenta o iniciar sesión."""
@@ -65,11 +81,12 @@ def _hash_token(token):
 
 
 # ---------------- cuentas ----------------
-def validar_contrasena(contrasena):
-    """Mínimo 8 caracteres, con al menos una mayúscula, una minúscula y un número."""
+def validar_contrasena(contrasena, usuario=""):
+    """Reglas: largo mínimo, mayúscula, minúscula y número; que no contenga el usuario
+    ni sea una contraseña común o una secuencia fácil de adivinar."""
     faltan = []
-    if len(contrasena) < 8:
-        faltan.append("8 caracteres")
+    if len(contrasena) < LARGO_MINIMO:
+        faltan.append(f"{LARGO_MINIMO} caracteres")
     if not re.search(r"[A-Z]", contrasena):
         faltan.append("una mayúscula")
     if not re.search(r"[a-z]", contrasena):
@@ -79,6 +96,17 @@ def validar_contrasena(contrasena):
     if faltan:
         raise ErrorCuenta("La contraseña necesita al menos " + ", ".join(faltan))
 
+    minuscula = contrasena.lower()
+    letras_usuario = re.sub(r"[0-9]+$", "", usuario.lower())
+    if len(letras_usuario) >= 4 and letras_usuario in minuscula:
+        raise ErrorCuenta("La contraseña no puede contener tu usuario")
+    # Solo las letras de la contraseña: "Colombia2026!" -> "colombia"
+    letras = re.sub(r"[^a-zñ]", "", minuscula)
+    if letras in BASES_COMUNES or any(b in letras for b in BASES_COMUNES if len(b) >= 6):
+        raise ErrorCuenta("Esa contraseña es muy común y fácil de adivinar; elige otra")
+    if len(set(minuscula)) <= 3 or any(minuscula in sec or sec[:6] in minuscula for sec in SECUENCIAS):
+        raise ErrorCuenta("Esa contraseña es una secuencia o repetición fácil de adivinar; elige otra")
+
 
 def crear_cuenta(usuario, contrasena):
     """Crea una cuenta. La primera cuenta del sistema queda como administrador."""
@@ -87,7 +115,7 @@ def crear_cuenta(usuario, contrasena):
         raise ErrorCuenta("El usuario son tus nombres y apellidos todo pegado, solo letras "
                           "(sin tildes, espacios ni signos), y si quieres un número del 1 al 100 "
                           "al final. Ejemplo: senendarionino10")
-    validar_contrasena(contrasena)
+    validar_contrasena(contrasena, usuario)
 
     sal = secrets.token_bytes(16)
     clave = _hash_contrasena(contrasena, sal)
