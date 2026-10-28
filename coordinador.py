@@ -22,7 +22,7 @@ import grpc
 import almacenamiento_pb2 as pb
 import almacenamiento_pb2_grpc as pb_grpc
 import config
-from config import INTERVALO_SALUD, PLAZO_PING, REPLICAS
+from config import ESPERA_RE_REPLICACION, INTERVALO_SALUD, PLAZO_PING, REPLICAS
 from indice import Indice
 
 CARPETA = "datos_coordinador"
@@ -57,6 +57,15 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
         self.nodos = {i: {"direccion": d, "vivo": False} for i, d in self.indice.nodos().items()}
         self.pendientes = {}   # nombre -> nodos asignados que aún no confirman la subida
         self.vistos = set()    # nodos que ya respondieron en esta sesión del coordinador
+
+        # Desde cuándo está caído cada nodo (para el periodo de gracia de la re-replicación).
+        # Se usa time.monotonic(): un reloj que solo avanza y no cambia si ajustan la hora del PC.
+        # Al arrancar, los nodos conocidos cuentan como caídos hasta que se conecten.
+        ahora = time.monotonic()
+        self.caido_desde = {i: ahora for i in self.nodos}
+        # Archivos que ya se avisaron como "en riesgo", para no repetir el aviso cada 5 segundos
+        self.sin_destino = set()
+
         self._evento("coordinador_iniciado",
                      f"Coordinador iniciado con {len(self.nodos)} nodo(s) conocido(s)")
 
@@ -79,7 +88,9 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
             visto = request.nodo_id in self.vistos
             self.nodos[request.nodo_id] = {"direccion": request.direccion, "vivo": True}
             self.vistos.add(request.nodo_id)
+            self.caido_desde.pop(request.nodo_id, None)   # si estaba caído, ya no lo está
             self.indice.guardar_nodo(request.nodo_id, request.direccion)
+
         if anterior is None:
             self._evento("nodo_registrado",
                          f"{request.nodo_id.upper()} se registró en {request.direccion}")
@@ -237,9 +248,16 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                     visto = nodo_id in self.vistos
                     if vivo:
                         self.vistos.add(nodo_id)
+                    # Solo hay cambio si el estado nuevo es distinto al que tenía
                     if nodo_id in self.nodos and self.nodos[nodo_id]["vivo"] != vivo:
                         self.nodos[nodo_id]["vivo"] = vivo
                         cambio = True
+                        if vivo:
+                            # Volvió: se borra su hora de caída (cancela la re-replicación pendiente)
+                            self.caido_desde.pop(nodo_id, None)
+                        else:
+                            # Se cayó: se anota la hora; el periodo de gracia empieza a contar aquí
+                            self.caido_desde[nodo_id] = time.monotonic()
                 if cambio:
                     if vivo and not visto:
                         self._evento("nodo_conectado", f"{nodo_id.upper()} conectado")
@@ -251,7 +269,79 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                                      logging.WARNING)
             time.sleep(INTERVALO_SALUD)
 
+    # ---------- re-replicación automática ----------
+    def reparar(self):
+        """Busca archivos con menos copias vivas de las debidas y ordena copiarlos.
+        Se ejecuta en su propio hilo, cada INTERVALO_SALUD segundos."""
+        while True:
+            time.sleep(INTERVALO_SALUD)
+            try:
+                self._revisar_replicas()
+            except Exception:
+                # Un error inesperado no debe matar el hilo: se registra y se reintenta luego
+                logging.exception("Error en la re-replicación; se reintentará")
 
+    def _revisar_replicas(self):
+        ahora = time.monotonic()
+        # Se toma una "foto" del estado con el candado, y se suelta antes de hacer llamadas de red
+        with self.candado:
+            vivos = {i for i, n in self.nodos.items() if n["vivo"]}
+            # Caídos hace menos de 30 s: aún dentro del periodo de gracia, puede que vuelvan
+            en_gracia = {i for i, t in self.caido_desde.items()
+                         if ahora - t < ESPERA_RE_REPLICACION}
+            direcciones = {i: n["direccion"] for i, n in self.nodos.items()}
+        carga = self.indice.carga()   # cuántos archivos tiene cada nodo (para repartir)
+
+        for nombre, replicas in self.indice.archivos().items():
+            vivas = [r for r in replicas if r in vivos]           # copias que responden
+            esperando = [r for r in replicas if r in en_gracia]   # copias que quizá vuelvan
+            # Bien replicado, o con copias que aún pueden volver: no se hace nada todavía
+            if len(vivas) >= REPLICAS or len(vivas) + len(esperando) >= REPLICAS:
+                self.sin_destino.discard(nombre)
+                continue
+            if not vivas:
+                continue   # no queda ninguna copia viva desde la cual copiar
+            # Destinos posibles: nodos vivos que NO tengan ya el archivo, el menos cargado primero
+            candidatos = sorted((n for n in vivos if n not in replicas), key=lambda n: carga.get(n, 0))
+            if not candidatos:
+                # No hay a dónde copiar: se avisa una sola vez y se reintenta en cada ciclo
+                if nombre not in self.sin_destino:
+                    self.sin_destino.add(nombre)
+                    self._evento("replica_en_riesgo", f"'{nombre}' tiene solo {len(vivas)} copia(s) "
+                                 "viva(s) y no hay otro nodo disponible para copiarlo",
+                                 logging.WARNING)
+                continue
+
+            origen, destino = vivas[0], candidatos[0]
+            self._copiar(nombre, origen, destino, direcciones)
+            # Se suma la copia nueva a la carga, para que el siguiente archivo vaya a otro nodo
+            carga[destino] = carga.get(destino, 0) + 1
+
+    def _copiar(self, nombre, origen, destino, direcciones):
+        """Ordena al nodo origen enviar el archivo al destino y verifica la copia."""
+        logging.info("Re-replicando '%s' de %s a %s", nombre, origen, destino)
+        try:
+            # Plano de control: el coordinador solo envía la orden (nombre + dirección destino);
+            # los bytes viajan directo de nodo a nodo (ReplicarHacia en nodo.py)
+            with grpc.insecure_channel(direcciones[origen]) as canal:
+                r = pb_grpc.NodoAlmacenamientoStub(canal).ReplicarHacia(
+                    pb.SolicitudReplicacion(nombre=nombre, destino=direcciones[destino]),
+                    timeout=config.PLAZO_ARCHIVO * 2)
+        except grpc.RpcError as e:
+            # Falló el origen o el destino: no se registra nada y se reintenta en el próximo ciclo
+            logging.warning("No se pudo re-replicar '%s' (%s); se reintentará", nombre, e.details())
+            return
+        # Verificación de integridad: el hash de la copia debe ser igual al de la subida original
+        esperado = self.indice.hash_de(nombre)
+        if esperado and r.hash_sha256 != esperado:
+            logging.warning("La copia de '%s' en %s no coincide con el hash original; "
+                            "no se registra", nombre, destino)
+            return
+        # Solo ahora, con la copia verificada, se registra la réplica nueva en SQLite
+        self.indice.agregar_replica(nombre, destino, r.hash_sha256)
+        self.sin_destino.discard(nombre)
+        self._evento("re_replicado", f"'{nombre}' se re-replicó de {origen.upper()} a "
+                                     f"{destino.upper()} ({r.tamano_bytes} bytes, hash verificado)")
 def main():
     parser = argparse.ArgumentParser(description="Coordinador gRPC")
     parser.add_argument("--puerto", type=int, default=config.PUERTO_COORDINADOR)
@@ -268,7 +358,10 @@ def main():
     logging.info("Coordinador escuchando en el puerto %d", args.puerto)
 
     threading.Thread(target=servicer.vigilar_nodos, daemon=True).start()
+    threading.Thread(target=servicer.reparar, daemon=True).start()   # hilo de re-replicación
     servidor.wait_for_termination()
+
+    
 
 
 if __name__ == "__main__":

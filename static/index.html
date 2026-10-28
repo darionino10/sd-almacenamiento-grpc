@@ -362,9 +362,11 @@ let sinVer = 0;
 // La actividad viene de la bitácora del coordinador: es la misma para todos los usuarios
 const TIPO_EVENTO = {
   archivo_subido: "exito", nodo_conectado: "exito", nodo_volvio: "exito", nodo_registrado: "exito",
-  nodo_caido: "error", subida_parcial: "aviso", copia_huerfana: "aviso",
-};
-let miUsuario = "";
+  re_replicado: "exito",                                   // verde: el sistema se curó solo
+  nodo_caido: "error",                                     // rojo
+  subida_parcial: "aviso", copia_huerfana: "aviso",
+  replica_en_riesgo: "aviso",                              // amarillo: no hay a dónde copiar
+};let miUsuario = ""; 
  
 function horaEvento(fecha) {
   const [dia, hora] = fecha.split("T");

@@ -13,8 +13,10 @@ service NodoAlmacenamiento {
   rpc DescargarArchivo (SolicitudArchivo) returns (stream Fragmento);
   // Devuelve los metadatos de un archivo guardado en el nodo.
   rpc ConsultarMetadatos (SolicitudArchivo) returns (Metadatos);
-  // Borra el archivo y sus metadatos del nodo.
+    // Borra el archivo y sus metadatos del nodo.
   rpc EliminarArchivo (SolicitudArchivo) returns (RespuestaRegistro);
+  // Ordenado por el coordinador: este nodo envía una copia de un archivo suyo a otro nodo.
+  rpc ReplicarHacia (SolicitudReplicacion) returns (ResultadoSubida);
 }
 
 // ===================== COORDINADOR =====================
@@ -64,6 +66,11 @@ message ResultadoSubida {
   string hash_sha256 = 5;
 }
 
+message SolicitudReplicacion {
+  string nombre = 1;    // archivo que se va a copiar
+  string destino = 2;   // dirección host:puerto del nodo que recibe la copia
+}
+  
 message Metadatos {
   string nombre = 1;
   string nodo_id = 2;

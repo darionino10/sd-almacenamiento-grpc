@@ -92,18 +92,44 @@ class NodoServicer(pb_grpc.NodoAlmacenamientoServicer):
         return pb.ResultadoSubida(ok=True, nodo_id=self.nodo_id, tamano_bytes=total,
                                   fragmentos=fragmentos, hash_sha256=sha.hexdigest())
 
-    def DescargarArchivo(self, request, context):
-        nombre = self._nombre_seguro(request.nombre)
-        ruta = os.path.join(self.carpeta, nombre)
-        if nombre not in self.metadatos or not os.path.exists(ruta):
-            context.abort(grpc.StatusCode.NOT_FOUND,
-                          f"El archivo '{nombre}' no existe en {self.nodo_id}")
-        logging.info("Enviando '%s'", nombre)
-        with open(ruta, "rb") as f:
+    def _fragmentos(self, nombre):
+        """Lee un archivo guardado y lo entrega en fragmentos de 64 KB."""
+        with open(os.path.join(self.carpeta, nombre), "rb") as f:
             indice = 0
             while bloque := f.read(TAMANO_FRAGMENTO):
                 yield pb.Fragmento(nombre=nombre, indice=indice, datos=bloque)
                 indice += 1
+
+    def _existe(self, nombre):
+        return nombre in self.metadatos and os.path.exists(os.path.join(self.carpeta, nombre))
+
+    def DescargarArchivo(self, request, context):
+        nombre = self._nombre_seguro(request.nombre)
+        if not self._existe(nombre):
+            context.abort(grpc.StatusCode.NOT_FOUND,
+                          f"El archivo '{nombre}' no existe en {self.nodo_id}")
+        logging.info("Enviando '%s'", nombre)
+        yield from self._fragmentos(nombre)
+
+    def ReplicarHacia(self, request, context):
+        """Orden del coordinador: enviar una copia de un archivo propio a otro nodo.
+        Aquí este nodo actúa como CLIENTE gRPC del nodo destino (plano de datos):
+        los bytes viajan de nodo a nodo sin pasar por el coordinador."""
+        nombre = self._nombre_seguro(request.nombre)
+        if not self._existe(nombre):
+            context.abort(grpc.StatusCode.NOT_FOUND,
+                          f"El archivo '{nombre}' no existe en {self.nodo_id}")
+        logging.info("Replicando '%s' hacia %s", nombre, request.destino)
+        try:
+            with grpc.insecure_channel(request.destino) as canal:
+                resultado = pb_grpc.NodoAlmacenamientoStub(canal).SubirArchivo(
+                    self._fragmentos(nombre), timeout=config.PLAZO_ARCHIVO)
+        except grpc.RpcError as e:
+            context.abort(grpc.StatusCode.UNAVAILABLE,
+                          f"No se pudo copiar '{nombre}' a {request.destino}: {e.code().name}")
+        logging.info("'%s' copiado a %s (%d bytes)", nombre, resultado.nodo_id,
+                     resultado.tamano_bytes)
+        return resultado
 
     def ConsultarMetadatos(self, request, context):
         nombre = self._nombre_seguro(request.nombre)

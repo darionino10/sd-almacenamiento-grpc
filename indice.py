@@ -111,6 +111,25 @@ class Indice:
                 resultado.setdefault(nombre, []).append(nodo)
         return resultado
 
+    def hash_de(self, nombre):
+        """SHA-256 guardado al subir el archivo (vacío para archivos migrados del JSON)."""
+        with self._con() as con:
+        # Se consulta el hash original que se guardó cuando se confirmó la subida
+            fila = con.execute("SELECT sha256 FROM archivos WHERE nombre = ?", (nombre,)).fetchone()
+        # Si el archivo no existe o no tiene hash (vino del JSON viejo),permite devolver texto vacío
+        return (fila[0] or "") if fila else ""
+
+    def agregar_replica(self, nombre, nodo, sha256=""):
+        """Registra una réplica nueva de un archivo existente (re-replicación)."""
+        with self._con() as con:   # una sola transacción: o se guarda todo o nada
+
+            # INSERT OR IGNORE: si la réplica ya estaba registrada, no la duplica (aplicamos idempotencia)
+            con.execute("INSERT OR IGNORE INTO replicas VALUES (?, ?)", (nombre, nodo))
+            if sha256:
+                # Los archivos migrados del JSON no tenían hash; se completa con el de la copia del nodo que esta vivo 
+                con.execute("UPDATE archivos SET sha256 = ? WHERE nombre = ? AND "
+                            "(sha256 IS NULL OR sha256 = '')", (sha256, nombre))
+
     def carga(self):
         """Cantidad de archivos que tiene cada nodo."""
         with self._con() as con:

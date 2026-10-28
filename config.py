@@ -22,6 +22,7 @@ PUERTO_WEB = 8000
 REPLICAS = 2                     # copias de cada archivo
 INTERVALO_SALUD = 5              # segundos entre pings del coordinador a los nodos
 PLAZO_PING = 2                   # segundos para considerar que un nodo no responde
+ESPERA_RE_REPLICACION=30      #Segundos que un nodo debe seguir caido para copiar sus archivos           
 
 # ---------------- transferencia ----------------
 TAMANO_FRAGMENTO = 64 * 1024     # 64 KB por fragmento
