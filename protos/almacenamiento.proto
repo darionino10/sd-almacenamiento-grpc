@@ -17,6 +17,8 @@ service NodoAlmacenamiento {
   rpc EliminarArchivo (SolicitudArchivo) returns (RespuestaRegistro);
   // Ordenado por el coordinador: este nodo envía una copia de un archivo suyo a otro nodo.
   rpc ReplicarHacia (SolicitudReplicacion) returns (ResultadoSubida);
+  // Lista los archivos que el nodo tiene de verdad en disco, con su hash recalculado.
+  rpc Inventario (Vacio) returns (InventarioNodo);
 }
 
 // ===================== COORDINADOR =====================
@@ -77,6 +79,11 @@ message Metadatos {
   int64 tamano_bytes = 3;
   string hash_sha256 = 4;
   string fecha_subida = 5;
+}
+
+message InventarioNodo {
+  string nodo_id = 1;
+  repeated Metadatos archivos = 2;   // un registro por archivo realmente guardado
 }
 
 // ---------- Mensajes del coordinador ----------

@@ -129,6 +129,11 @@ class Indice:
                 # Los archivos migrados del JSON no tenían hash; se completa con el de la copia del nodo que esta vivo 
                 con.execute("UPDATE archivos SET sha256 = ? WHERE nombre = ? AND "
                             "(sha256 IS NULL OR sha256 = '')", (sha256, nombre))
+                
+    def quitar_replica(self, nombre, nodo):
+        """Borra del índice la réplica de un archivo en un nodo (sobrante, perdida o dañada)."""
+        with self._con() as con:
+            con.execute("DELETE FROM replicas WHERE archivo = ? AND nodo = ?", (nombre, nodo))
 
     def carga(self):
         """Cantidad de archivos que tiene cada nodo."""

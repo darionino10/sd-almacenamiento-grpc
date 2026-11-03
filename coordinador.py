@@ -65,6 +65,8 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
         self.caido_desde = {i: ahora for i in self.nodos}
         # Archivos que ya se avisaron como "en riesgo", para no repetir el aviso cada 5 segundos
         self.sin_destino = set()
+                # Nodos que volvieron y se están revisando: aún no se confía en sus copias
+        self.resincronizando = set()
 
         self._evento("coordinador_iniciado",
                      f"Coordinador iniciado con {len(self.nodos)} nodo(s) conocido(s)")
@@ -97,10 +99,11 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
         elif not visto:
             # Ya era conocido, pero es su primera conexión desde que arrancó el coordinador
             self._evento("nodo_conectado", f"{request.nodo_id.upper()} conectado")
+            self._iniciar_resincronizacion(request.nodo_id)
         elif not anterior["vivo"]:
             self._evento("nodo_volvio", f"{request.nodo_id.upper()} volvió a estar disponible",
                          logging.WARNING)
-        return pb.RespuestaRegistro(ok=True, mensaje=f"{request.nodo_id} registrado")
+            self._iniciar_resincronizacion(request.nodo_id)
 
     def UbicarArchivo(self, request, context):
         nombre = os.path.basename(request.nombre)
@@ -267,6 +270,9 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
                     else:
                         self._evento("nodo_caido", f"{nodo_id.upper()} dejó de responder",
                                      logging.WARNING)
+                    if vivo:
+                        # Volvió (o se conectó): revisar sus copias antes de confiar en ellas
+                        self._iniciar_resincronizacion(nodo_id)
             time.sleep(INTERVALO_SALUD)
 
     # ---------- re-replicación automática ----------
@@ -290,19 +296,26 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
             en_gracia = {i for i, t in self.caido_desde.items()
                          if ahora - t < ESPERA_RE_REPLICACION}
             direcciones = {i: n["direccion"] for i, n in self.nodos.items()}
+            ocupados = set(self.resincronizando)   # nodos que volvieron y aún no se revisan
         carga = self.indice.carga()   # cuántos archivos tiene cada nodo (para repartir)
-
         for nombre, replicas in self.indice.archivos().items():
             vivas = [r for r in replicas if r in vivos]           # copias que responden
             esperando = [r for r in replicas if r in en_gracia]   # copias que quizá vuelvan
+            # Sobre-replicación: más copias vivas de las debidas (pasa cuando vuelve un nodo
+            # cuyo archivo ya se había re-replicado). Solo se actúa si todas ya fueron revisadas.
+            if len(vivas) > REPLICAS and not ocupados.intersection(vivas):
+                self._quitar_sobrante(nombre, vivas, carga, direcciones)
+                continue
             # Bien replicado, o con copias que aún pueden volver: no se hace nada todavía
             if len(vivas) >= REPLICAS or len(vivas) + len(esperando) >= REPLICAS:
                 self.sin_destino.discard(nombre)
                 continue
             if not vivas:
                 continue   # no queda ninguna copia viva desde la cual copiar
-            # Destinos posibles: nodos vivos que NO tengan ya el archivo, el menos cargado primero
-            candidatos = sorted((n for n in vivos if n not in replicas), key=lambda n: carga.get(n, 0))
+
+            #(se excluyen los nodos en revisión: todavía no se sabe qué tienen)
+            candidatos = sorted((n for n in vivos if n not in replicas and n not in ocupados),
+                                key=lambda n: carga.get(n, 0))
             if not candidatos:
                 # No hay a dónde copiar: se avisa una sola vez y se reintenta en cada ciclo
                 if nombre not in self.sin_destino:
@@ -342,6 +355,93 @@ class CoordinadorServicer(pb_grpc.CoordinadorServicer):
         self.sin_destino.discard(nombre)
         self._evento("re_replicado", f"'{nombre}' se re-replicó de {origen.upper()} a "
                                      f"{destino.upper()} ({r.tamano_bytes} bytes, hash verificado)")
+
+            # ---------- resincronización al volver un nodo ----------
+    def _iniciar_resincronizacion(self, nodo_id):
+        """Lanza la revisión del nodo en un hilo aparte, para no frenar el ping ni el registro."""
+        with self.candado:
+            if nodo_id in self.resincronizando:
+                return                          # ya se está revisando: no se repite
+            self.resincronizando.add(nodo_id)
+        threading.Thread(target=self._resincronizar, args=(nodo_id,), daemon=True).start()
+
+    def _resincronizar(self, nodo_id):
+        """Compara lo que el nodo tiene en disco con lo que dice el índice y lo corrige."""
+        try:
+            with self.candado:
+                direccion = self.nodos[nodo_id]["direccion"]
+                pendientes = set(self.pendientes)   # subidas en curso: no se tocan
+            # Paso 1: pedir el inventario real del nodo (archivos en disco + hash recalculado)
+            try:
+                with grpc.insecure_channel(direccion) as canal:
+                    inventario = pb_grpc.NodoAlmacenamientoStub(canal).Inventario(
+                        pb.Vacio(), timeout=config.PLAZO_ARCHIVO)
+            except grpc.RpcError as e:
+                logging.warning("No se pudo resincronizar %s (%s)", nodo_id, e.code().name)
+                return
+
+            en_disco = {a.nombre: a.hash_sha256 for a in inventario.archivos}   # nombre -> hash
+            segun_indice = self.indice.archivos()                               # nombre -> réplicas
+            huerfanas, danadas, perdidas = [], [], []
+
+            # Paso 2: revisar lo que el nodo SÍ tiene
+            for nombre, sha in en_disco.items():
+                if nombre in pendientes:
+                    continue
+                if nodo_id not in segun_indice.get(nombre, []):
+                    # El índice no cuenta esta copia: se eliminó o no se confirmó mientras estaba caído
+                    huerfanas.append(nombre)
+                elif self.indice.hash_de(nombre) and sha != self.indice.hash_de(nombre):
+                    # El contenido ya no es el original: copia corrupta
+                    danadas.append(nombre)
+
+            # Paso 3: revisar lo que el índice dice que tiene pero ya NO está en su disco
+            for nombre, replicas in segun_indice.items():
+                if nodo_id in replicas and nombre not in en_disco:
+                    perdidas.append(nombre)
+
+            # Paso 4: corregir
+            for nombre in huerfanas + danadas:
+                self._borrar_en_nodo(direccion, nombre)       # se borra del disco del nodo
+            for nombre in danadas + perdidas:
+                self.indice.quitar_replica(nombre, nodo_id)   # la re-replicación repondrá la copia
+
+            # Paso 5: dejar constancia en la bitácora (solo si hubo algo que corregir)
+            if huerfanas or danadas or perdidas:
+                partes = []
+                if huerfanas:
+                    partes.append(f"{len(huerfanas)} copia(s) huérfana(s) eliminada(s)")
+                if danadas:
+                    partes.append(f"{len(danadas)} copia(s) dañada(s) descartada(s)")
+                if perdidas:
+                    partes.append(f"{len(perdidas)} copia(s) perdida(s) quitada(s) del índice")
+                self._evento("resincronizado", f"{nodo_id.upper()} resincronizado: " + ", ".join(partes),
+                             logging.WARNING)
+            else:
+                logging.info("%s revisado: sus copias coinciden con el índice", nodo_id)
+        finally:
+            # Pase lo que pase, el nodo deja de estar "en revisión"
+            with self.candado:
+                self.resincronizando.discard(nodo_id)
+
+    def _borrar_en_nodo(self, direccion, nombre):
+        """Pide a un nodo borrar un archivo; si ya no lo tenía, no pasa nada."""
+        try:
+            with grpc.insecure_channel(direccion) as canal:
+                pb_grpc.NodoAlmacenamientoStub(canal).EliminarArchivo(
+                    pb.SolicitudArchivo(nombre=nombre), timeout=config.PLAZO)
+        except grpc.RpcError as e:
+            if e.code() != grpc.StatusCode.NOT_FOUND:
+                logging.warning("No se pudo borrar '%s' en %s (%s)", nombre, direccion, e.code().name)
+
+    def _quitar_sobrante(self, nombre, vivas, carga, direcciones):
+        """Deja el archivo con REPLICAS copias, quitando la del nodo más cargado."""
+        sobrante = max(vivas, key=lambda n: carga.get(n, 0))
+        self._borrar_en_nodo(direcciones[sobrante], nombre)
+        self.indice.quitar_replica(nombre, sobrante)
+        carga[sobrante] = carga.get(sobrante, 0) - 1   # actualizar la carga para el siguiente archivo
+        self._evento("sobre_replicacion", f"'{nombre}' tenía {len(vivas)} copias vivas; se eliminó "
+                                          f"la sobrante de {sobrante.upper()}")
 def main():
     parser = argparse.ArgumentParser(description="Coordinador gRPC")
     parser.add_argument("--puerto", type=int, default=config.PUERTO_COORDINADOR)

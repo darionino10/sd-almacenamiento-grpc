@@ -111,6 +111,27 @@ class NodoServicer(pb_grpc.NodoAlmacenamientoServicer):
         logging.info("Enviando '%s'", nombre)
         yield from self._fragmentos(nombre)
 
+    def Inventario(self, request, context):
+        """Lo que este nodo tiene DE VERDAD: revisa cada archivo en disco y recalcula su
+        SHA-256, para detectar copias que se perdieron o se dañaron mientras estaba apagado."""
+        archivos = []
+        with self.candado:
+            registrados = dict(self.metadatos)          # copia, para no bloquear mientras se lee
+        for nombre, meta in registrados.items():
+            ruta = os.path.join(self.carpeta, nombre)
+            if not os.path.exists(ruta):                # registrado pero borrado del disco
+                continue
+            sha = hashlib.sha256()
+            with open(ruta, "rb") as f:
+                while bloque := f.read(TAMANO_FRAGMENTO):
+                    sha.update(bloque)
+            archivos.append(pb.Metadatos(nombre=nombre, nodo_id=self.nodo_id,
+                                         tamano_bytes=os.path.getsize(ruta),
+                                         hash_sha256=sha.hexdigest(),
+                                         fecha_subida=meta.get("fecha_subida", "")))
+        logging.info("Inventario enviado: %d archivo(s)", len(archivos))
+        return pb.InventarioNodo(nodo_id=self.nodo_id, archivos=archivos)
+
     def ReplicarHacia(self, request, context):
         """Orden del coordinador: enviar una copia de un archivo propio a otro nodo.
         Aquí este nodo actúa como CLIENTE gRPC del nodo destino (plano de datos):
