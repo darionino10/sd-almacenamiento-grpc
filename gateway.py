@@ -91,6 +91,7 @@ class Nodo(BaseModel):
 class Archivo(BaseModel):
     nombre: str
     replicas: list[str] = Field(examples=[["nodo1", "nodo2"]])
+    objetivo: int = Field(description="copias que deberia tener (factor de replicación)")
 
 
 class ResultadoNodo(BaseModel):
@@ -248,7 +249,7 @@ def listar_archivos():
         r = coordinador().ListarArchivos(pb.Vacio(), timeout=PLAZO)
     except grpc.RpcError as e:
         raise error_http(e)
-    return [{"nombre": a.nombre, "replicas": list(a.nodos)} for a in r.archivos]
+    return [{"nombre": a.nombre, "replicas": list(a.nodos), "objetivo": config.REPLICAS} for a in r.archivos]
 
 
 @app.delete("/api/archivos/{nombre}", tags=["Archivos"], response_model=ResultadoEliminacion,

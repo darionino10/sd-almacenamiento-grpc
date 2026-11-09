@@ -169,6 +169,13 @@
     .fila:last-child { border-bottom: none; }
     .fila .nombre { font-weight: 500; word-break: break-word; }
     .replicas { display: flex; gap: 6px; flex-wrap: wrap; }
+        /* Indicador de réplicas en riesgo */
+    .fila.riesgo { box-shadow: inset 3px 0 0 #ffb020; padding-left: 12px; }
+    .fila.sin-copias { box-shadow: inset 3px 0 0 var(--caido); padding-left: 12px; }
+    .estado-archivo { display: inline-block; margin-top: 6px; padding: 1px 9px; border-radius: 999px;
+                      font-size: 12px; font-weight: 600; cursor: help; }
+    .estado-archivo.riesgo { color: #2a1c00; background: #ffb020; box-shadow: 0 0 10px rgba(255, 176, 32, 0.45); }
+    .estado-archivo.sin-copias { color: #fff; background: var(--caido); box-shadow: 0 0 10px rgba(255, 69, 96, 0.45); }
     .replica { padding: 2px 9px; border-radius: 4px; font-family: var(--mono); font-size: 12px;
                color: #bfffdc; background: rgba(23, 196, 122, 0.16); border: 1px solid rgba(23, 196, 122, 0.55); }
     .replica.caida { color: #ffc2cb; background: rgba(255, 69, 96, 0.16); border-color: rgba(255, 69, 96, 0.6); }
@@ -477,20 +484,33 @@ async function cargarNodos() {
 // ---------------- archivos ----------------
 async function cargarArchivos() {
   const archivos = await pedirJSON("/api/archivos");
-  $("cuentaArchivos").textContent = archivos.length ? `${archivos.length} en total` : "";
+  // Copias vivas = réplicas que están en nodos que el coordinador reporta como activos
+  const vivas = (a) => a.replicas.filter((r) => estadoNodos[r] === true).length;
+  const enRiesgo = archivos.filter((a) => vivas(a) < a.objetivo).length;
+  $("cuentaArchivos").textContent = !archivos.length ? ""
+    : `${archivos.length} en total${enRiesgo ? ` · ${enRiesgo} en riesgo` : ""}`;
   if (!archivos.length) {
     $("archivos").innerHTML = '<li class="mensaje-vacio">Aún no hay archivos. Sube el primero desde el panel de la izquierda.</li>';
     return;
   }
   $("archivos").innerHTML = archivos.map((a) => {
     const id = encodeURIComponent(a.nombre);
+    const n = vivas(a);
+    // Tres estados: normal, en riesgo (quedan copias, pero menos de las debidas) o sin copias vivas
+    const estado = n === 0 ? "sin-copias" : n < a.objetivo ? "riesgo" : "";
+    const etiqueta = estado === "sin-copias"
+      ? `<span class="estado-archivo sin-copias" title="Ninguna réplica está activa: no se puede descargar hasta que vuelva un nodo con este archivo">No disponible</span>`
+      : estado === "riesgo"
+      ? `<span class="estado-archivo riesgo" title="Tiene ${n} de ${a.objetivo} copias vivas. Si el nodo caído no vuelve en 30 segundos, el sistema creará una copia nueva en otro nodo.">En riesgo · ${n} de ${a.objetivo} copias</span>`
+      : "";
     return `
-    <li class="fila">
-      <div class="nombre">${escapar(a.nombre)}</div>
+    <li class="fila ${estado}">
+      <div class="nombre">${escapar(a.nombre)}${etiqueta ? "<br>" + etiqueta : ""}</div>
       <div class="replicas">${a.replicas.map((r) =>
         `<span class="replica ${estadoNodos[r] === false ? "caida" : ""}">${escapar(r.toUpperCase())}</span>`).join("")}</div>
       <div class="acciones">
-        <button class="boton principal" data-accion="descargar" data-nombre="${id}">Descargar</button>
+        <button class="boton principal" data-accion="descargar" data-nombre="${id}"
+                ${estado === "sin-copias" ? 'disabled title="No hay ninguna copia activa"' : ""}>Descargar</button>
         <button class="boton" data-accion="info" data-nombre="${id}">Información</button>
         <button class="boton peligro" data-accion="eliminar" data-nombre="${id}">Eliminar</button>
       </div>
