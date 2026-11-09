@@ -65,6 +65,7 @@ async def exigir_sesion(request: Request, siguiente):
         if not usuario:
             return JSONResponse(status_code=401, content={"detail": "Inicia sesión para continuar"})
         request.state.usuario = usuario["usuario"]   # para enviarlo al coordinador
+        request.state.rol = usuario["rol"] # para permisos (solo el administrador puede eliminar archivos)
     return await siguiente(request)
 
 
@@ -253,10 +254,13 @@ def listar_archivos():
 
 
 @app.delete("/api/archivos/{nombre}", tags=["Archivos"], response_model=ResultadoEliminacion,
-            responses={**NO_ENCONTRADO, **NO_DISPONIBLE}, summary="Eliminar un archivo")
+            responses={403: {"model": Error, "description": "Solo el administrador puede eliminar"},
+                       **NO_ENCONTRADO, **NO_DISPONIBLE},
+            summary="Eliminar un archivo (solo administrador)")
 def eliminar(nombre: str, request: Request):
-
     """Elimina el archivo de todas sus réplicas y del índice del coordinador."""
+    if request.state.rol != "administrador":
+        raise HTTPException(403, "Solo el administrador puede eliminar archivos")
     try:
         r = coordinador().EliminarArchivo(pb.SolicitudArchivo(nombre=nombre), timeout=PLAZO * 3,
                                           metadata=metadatos(request))

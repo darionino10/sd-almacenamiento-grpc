@@ -374,7 +374,9 @@ const TIPO_EVENTO = {
   subida_parcial: "aviso", copia_huerfana: "aviso",
   replica_en_riesgo: "aviso",                              // amarillo: no hay a dónde copiar
   resincronizado: "aviso", sobre_replicacion: "info",
-};let miUsuario = ""; 
+};
+let miUsuario = ""; 
+let miRol = "";        // "administrador" o "usuario": solo el administrador ve el botón Eliminar
  
 function horaEvento(fecha) {
   const [dia, hora] = fecha.split("T");
@@ -512,7 +514,8 @@ async function cargarArchivos() {
         <button class="boton principal" data-accion="descargar" data-nombre="${id}"
                 ${estado === "sin-copias" ? 'disabled title="No hay ninguna copia activa"' : ""}>Descargar</button>
         <button class="boton" data-accion="info" data-nombre="${id}">Información</button>
-        <button class="boton peligro" data-accion="eliminar" data-nombre="${id}">Eliminar</button>
+                ${miRol === "administrador"
+          ? `<button class="boton peligro" data-accion="eliminar" data-nombre="${id}">Eliminar</button>` : ""}
       </div>
     </li>`;
   }).join("");
@@ -679,9 +682,11 @@ async function cargarUsuario() {
   try {
     const u = await pedirJSON("/api/sesion");
     miUsuario = u.usuario;
+    miRol = u.rol;
     $("nombreUsuario").textContent = u.usuario;
     $("rolUsuario").textContent = u.rol === "administrador" ? "Administrador" : "Usuario";
     $("cuentaUsuario").hidden = false;
+    actualizar(); // vuelve a realizar la tabla ya sabiendo el rol del usuario, para mostrar o no el botón Eliminar
   } catch {}
 }
 $("btnSalir").addEventListener("click", async () => {
