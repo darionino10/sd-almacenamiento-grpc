@@ -3,28 +3,67 @@
 Proyecto final de Sistemas Distribuidos, Fundación Universitaria Juan de Castellanos.
 
 Sistema que guarda archivos en varios nodos de almacenamiento. Un coordinador registra los
-nodos, comprueba cuáles están vivos y guarda cada archivo en dos nodos (réplicas). Si un nodo
-se cae, los archivos siguen disponibles desde su réplica. Toda la comunicación entre
-componentes usa **gRPC**; un panel web permite usarlo desde el navegador.
+nodos, comprueba cada 5 segundos cuáles están vivos y guarda cada archivo en dos nodos
+(réplicas). Si un nodo se cae, los archivos siguen disponibles desde su réplica y, si no vuelve
+en 30 segundos, el sistema crea una copia nueva en otro nodo por sí solo. Toda la comunicación
+entre componentes usa **gRPC**; un panel web con inicio de sesión permite usarlo desde el
+navegador, incluso desde otros equipos a través de Tailscale.
+
+## Funcionalidades
+
+- **Replicación:** cada archivo se guarda en los dos nodos con menos carga, en fragmentos de 64 KB
+  por streaming, y se verifica su integridad con SHA-256.
+- **Confirmación de subida:** el coordinador solo registra las réplicas que realmente recibieron
+  el archivo completo.
+- **Detección de fallas:** el coordinador hace ping a cada nodo cada 5 segundos.
+- **Conmutación a réplica:** si un nodo no responde, la descarga se hace desde otra réplica.
+- **Re-replicación automática:** si un nodo sigue caído después de 30 segundos (periodo de
+  gracia), sus archivos se copian de nodo a nodo hacia otro nodo sano, con verificación por hash.
+- **Resincronización:** cuando un nodo vuelve, el coordinador revisa su inventario real y elimina
+  copias huérfanas, dañadas o sobrantes.
+- **Indicador de réplicas en riesgo:** el panel marca los archivos con menos copias vivas de las
+  debidas.
+- **Persistencia:** índice y bitácora de eventos del coordinador en SQLite, con transacciones.
+- **Actividad en tiempo real:** la bitácora llega al instante a todos los paneles abiertos, con el
+  usuario que hizo cada acción.
+- **Cuentas de usuario:** registro e inicio de sesión, contraseñas con hash scrypt y sal por
+  usuario, y solo el administrador puede eliminar archivos.
+- **Despliegue en varios equipos** por Tailscale.
 
 ## Arquitectura
 
 ```
 Navegador ──HTTP──► Gateway (FastAPI) ──gRPC──► Coordinador ──gRPC──► Nodos de almacenamiento
-Cliente de consola ──────────────────────gRPC──►      │                ▲
-                                                       └── registro y chequeo de salud ┘
+Cliente de consola ─────────────────────gRPC──►      │               ▲         │
+                                                      │               └─ copias ┘
+                                                      └── registro, salud y órdenes de copia
 ```
 
 | Componente | Archivo | Puerto | Función |
 | --- | --- | --- | --- |
-| Coordinador | `coordinador.py` | 50050 | Registra nodos, comprueba su salud cada 5 s y asigna dos réplicas por archivo |
-| Nodo de almacenamiento | `nodo.py` | 50051, 50052, 50053… | Guarda y entrega archivos por *streaming* en fragmentos de 64 KB |
-| Gateway web | `gateway.py` | 8000 | Panel web y API HTTP que traduce cada petición a llamadas gRPC |
+| Coordinador | `coordinador.py` | 50050 | Registra nodos, vigila su salud, asigna réplicas, re-replica y resincroniza |
+| Nodo de almacenamiento | `nodo.py` | 50051, 50052, 50053… | Guarda, entrega, copia a otro nodo e informa su inventario |
+| Gateway web | `gateway.py` | 8000 | Panel web, cuentas de usuario y API HTTP que traduce cada petición a gRPC |
 | Cliente de consola | `cliente.py` | — | Sube, lista, consulta, descarga y elimina archivos desde la terminal |
 | Lanzador | `iniciar.py` | — | Inicia todo con un solo comando según el papel del equipo |
 
-El contrato de comunicación está en `protos/almacenamiento.proto`. Los puertos, réplicas y
-plazos están en `config.py`.
+**Plano de control y plano de datos:** el coordinador solo decide y envía órdenes pequeñas; los
+archivos viajan directamente entre el cliente y los nodos, o entre nodos durante la
+re-replicación.
+
+### Métodos gRPC (`protos/almacenamiento.proto`)
+
+| Servicio | Método | Tipo |
+| --- | --- | --- |
+| NodoAlmacenamiento | `Ping` | Unario |
+| NodoAlmacenamiento | `SubirArchivo` | Streaming del cliente |
+| NodoAlmacenamiento | `DescargarArchivo` | Streaming del servidor |
+| NodoAlmacenamiento | `ConsultarMetadatos`, `EliminarArchivo` | Unario |
+| NodoAlmacenamiento | `ReplicarHacia` | Unario (el nodo actúa como cliente de otro nodo) |
+| NodoAlmacenamiento | `Inventario` | Unario |
+| Coordinador | `RegistrarNodo`, `UbicarArchivo`, `ConfirmarSubida` | Unario |
+| Coordinador | `ListarArchivos`, `EstadoNodos`, `EliminarArchivo` | Unario |
+| Coordinador | `SuscribirEventos` | Streaming del servidor |
 
 ## Estructura del proyecto
 
@@ -32,21 +71,24 @@ plazos están en `config.py`.
 sd-almacenamiento-grpc/
 ├── protos/almacenamiento.proto   contrato gRPC (servicios y mensajes)
 ├── static/index.html             panel web
-├── config.py                     configuración común
+├── static/entrar.html            inicio de sesión y registro
+├── config.py                     configuración común (puertos, réplicas, plazos)
 ├── config_local.py               configuración de ESTE equipo (no se sube a Git)
-├── coordinador.py
-├── nodo.py
-├── gateway.py
-├── cliente.py
-├── iniciar.py
+├── coordinador.py                coordinador gRPC
+├── indice.py                     índice y bitácora del coordinador en SQLite
+├── nodo.py                       nodo de almacenamiento gRPC
+├── gateway.py                    gateway web (FastAPI)
+├── cuentas.py                    cuentas de usuario y sesiones
+├── cliente.py                    cliente de consola
+├── iniciar.py                    arranque con un solo comando
 ├── generar_codigo.py             genera el código gRPC a partir del .proto
 ├── requirements.txt
-└── evidencias/                   capturas de las pruebas
+└── evidencias/                   capturas y registro de las pruebas
 ```
 
-## Instalación en un equipo
+## Instalación
 
-Requisitos: **Python 3.10 o superior** (probado con 3.14.8) en Windows, Linux o macOS.
+Requisitos: **Python 3.10 o superior** (probado con 3.14.8).
 
 ```
 python -m venv .venv
@@ -56,8 +98,8 @@ pip install -r requirements.txt
 python generar_codigo.py
 ```
 
-`generar_codigo.py` crea `almacenamiento_pb2.py` y `almacenamiento_pb2_grpc.py` a partir del
-contrato. Se debe ejecutar otra vez si cambia el archivo `.proto`.
+`generar_codigo.py` crea `almacenamiento_pb2.py` y `almacenamiento_pb2_grpc.py`. Se debe ejecutar
+otra vez si cambia el archivo `.proto`.
 
 ## Uso en un solo equipo
 
@@ -66,10 +108,11 @@ python iniciar.py
 ```
 
 Inicia el coordinador, tres nodos y el gateway en la misma terminal, cada uno con su color.
-Abre el panel en **http://localhost:8000** y la documentación de la API en
-**http://localhost:8000/docs**.
 
-Mientras corre se pueden escribir estas órdenes:
+- Panel: **http://localhost:8000**
+- Documentación de la API: **http://localhost:8000/docs**
+
+Órdenes disponibles mientras corre:
 
 | Orden | Qué hace |
 | --- | --- |
@@ -78,116 +121,74 @@ Mientras corre se pueden escribir estas órdenes:
 | `estado` | Muestra qué procesos están corriendo |
 | `salir` | Detiene todo (también con Ctrl+C) |
 
-Otras opciones de `iniciar.py`: `--nodos 2` (cantidad de nodos locales), `--sin-web` (sin
-panel) y `--detalle` (muestra también los pings de salud y las consultas del panel).
+Opciones: `--nodos 2`, `--ids nodo1,nodo3`, `--sin-web` y `--detalle` (muestra también los
+pings de salud).
+
+También se puede iniciar cada componente en su propia terminal:
+
+```
+python coordinador.py
+python nodo.py --id nodo1 --puerto 50051 --host IP_DE_ESTE_EQUIPO
+python nodo.py --id nodo2 --puerto 50052 --host IP_DE_ESTE_EQUIPO
+python nodo.py --id nodo3 --puerto 50053 --host IP_DE_ESTE_EQUIPO
+python -m uvicorn gateway:app --host 0.0.0.0 --port 8000
+```
+
+## Cuentas de usuario
+
+Al abrir el panel se pide iniciar sesión. La **primera cuenta creada es la del administrador**;
+las demás son usuarios normales.
+
+- **Usuario:** nombres y apellidos todo pegado, incluyendo numeros.
+- **Contraseña:** mínimo 10 caracteres, con una mayúscula, una minúscula y un número; no puede
+  contener el usuario ni ser una contraseña común.
+- **Permisos:** todos pueden subir, consultar y descargar; solo el administrador puede eliminar.
+- Las contraseñas se guardan con hash scrypt y una sal distinta por usuario, y la sesión viaja en
+  una cookie HttpOnly que vence a las 8 horas.
 
 ## Uso en varios equipos con Tailscale
 
-Para que computadores de redes distintas se comuniquen se usa **Tailscale**, una red privada
-que da a cada equipo una IP fija que empieza por `100.` y cifra el tráfico.
+Tailscale crea una red privada entre los equipos, con una IP fija que empieza por `100.`, y
+cifra el tráfico.
 
-| Equipo | Qué corre | Comando |
-| --- | --- | --- |
-| Central | coordinador, gateway y sus nodos | `python iniciar.py --ids nodo1,nodo3` |
-| Segundo equipo | un nodo | `python iniciar.py --rol nodo --id nodo2 --coordinador IP_CENTRAL` |
+| Equipo | Comando |
+| --- | --- |
+| Central (coordinador, gateway y sus nodos) | `python iniciar.py --ids nodo1,nodo3` |
+| Segundo equipo (un nodo) | `python iniciar.py --rol nodo --id nodo2 --coordinador IP_CENTRAL` |
 
-`IP_CENTRAL` es la IP de Tailscale del equipo central (por ejemplo `100.123.23.123`). Cada
-nodo debe tener un nombre distinto: si el segundo equipo corre `nodo2`, el central no debe
-correrlo también, por eso arranca con `--ids nodo1,nodo3`.
+Cada nodo debe tener un nombre distinto. Desde cualquier dispositivo de la red, el panel se abre
+en `http://IP_CENTRAL:8000`.
 
-### Guía para preparar un segundo equipo
+### Preparar un segundo equipo
 
-Sigue estos pasos en el computador que va a aportar un nodo.
-
-**1. Instalar Python**
-
-1. Descarga Python 3.14 desde https://www.python.org/downloads/windows/ (Windows installer
-   64-bit).
-2. En la **primera pantalla** del instalador marca **"Add python.exe to PATH"** y luego
-   **Install Now**.
-3. Al terminar, haz clic en **"Disable path length limit"** si aparece.
-4. En Windows, desactiva el acceso directo de la Microsoft Store: **Configuración →
-   Aplicaciones → Configuración avanzada de aplicaciones → Alias de ejecución de
-   aplicaciones**, y apaga los de `python.exe` y `python3.exe`.
-5. Abre una terminal nueva y comprueba: `python --version`.
-
-**2. Descargar el proyecto**
-
-Desde GitHub: botón **Code → Download ZIP**, y descomprímelo en una carpeta fuera de OneDrive,
-por ejemplo `C:\Users\TU_USUARIO\proyectos\`. También se puede usar `git clone`.
-
-**3. Instalar las dependencias**
-
-Abre una terminal dentro de la carpeta del proyecto:
-
-```
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-python generar_codigo.py
-```
-
-Si al activar aparece un error de "ejecución de scripts deshabilitada", ejecuta una vez
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` y vuelve a activar. La línea de la
-terminal debe empezar con `(.venv)`.
-
-**4. Unirse a la red de Tailscale**
-
-1. Pide al dueño del equipo central que te invite desde la consola de Tailscale
-   (**Users → Invite users**). También puedes iniciar sesión con la misma cuenta del equipo
-   central.
-2. Descarga e instala Tailscale desde https://tailscale.com/download e inicia sesión.
-3. Anota tu IP con `tailscale ip -4` (empieza por `100.`).
-4. Comprueba que ves al equipo central: `tailscale ping IP_CENTRAL` debe responder `pong`.
-
-**5. Abrir los puertos solo para Tailscale**
-
-En **PowerShell como administrador** (clic derecho → *Ejecutar como administrador*). Este
-paso se hace en **los dos equipos**, el central y el segundo:
-
-```
-New-NetFirewallRule -DisplayName "Almacenamiento gRPC (Tailscale)" -Direction Inbound -Protocol TCP -LocalPort 50050-50053,8000 -RemoteAddress 100.64.0.0/10 -Action Allow
-```
-
-La regla solo acepta conexiones desde equipos de la red de Tailscale (`100.64.0.0/10`).
-
-**6. Crear la configuración de este equipo**
-
-Crea el archivo `config_local.py` en la raíz del proyecto con tu IP y la del equipo central:
-
-```python
-IP_PROPIA = "100.x.y.z"           # IP de Tailscale de ESTE equipo
-COORDINADOR_HOST = "IP_CENTRAL"   # IP de Tailscale del equipo central
-```
-
-Este archivo no se sube a Git: cada equipo tiene el suyo.
-
-**7. Arrancar el nodo**
-
-Primero el equipo central debe estar corriendo (`python iniciar.py --ids nodo1,nodo3`).
-Luego, en el segundo equipo:
-
-```
-python iniciar.py --rol nodo --id nodo2
-```
-
-Debe aparecer `Registrado en el coordinador: nodo2 registrado`. En el panel del equipo
-central aparecerá NODO2 en verde. Desde el segundo equipo también se puede abrir el panel en
-`http://IP_CENTRAL:8000`.
+1. Instalar Python 3.14 marcando **"Add python.exe to PATH"**.
+2. Descargar el proyecto (**Code → Download ZIP** o `git clone`) en una carpeta fuera de OneDrive.
+3. Crear el entorno e instalar dependencias (ver Instalación).
+4. Instalar Tailscale, unirse a la red del equipo central (por invitación o con la misma cuenta) y
+   comprobar la conexión con `tailscale ping IP_CENTRAL`.
+5. En **PowerShell como administrador**, en los dos equipos, abrir los puertos solo para Tailscale:
+   ```
+   New-NetFirewallRule -DisplayName "Almacenamiento gRPC (Tailscale)" -Direction Inbound -Protocol TCP -LocalPort 50050-50053,8000 -RemoteAddress 100.64.0.0/10 -Action Allow
+   ```
+6. Crear `config_local.py` en la raíz del proyecto:
+   ```python
+   IP_PROPIA = "100.x.y.z"           # IP de Tailscale de ESTE equipo
+   COORDINADOR_HOST = "IP_CENTRAL"   # IP de Tailscale del equipo central
+   ```
+7. Con el equipo central corriendo, ejecutar `python iniciar.py --rol nodo --id nodo2`.
 
 ## Cliente de consola
 
 ```
-python cliente.py ping 100.123.23.123:50051
 python cliente.py subir ejemplo.txt
 python cliente.py listar
 python cliente.py info ejemplo.txt
 python cliente.py descargar ejemplo.txt --destino copia.txt
 python cliente.py eliminar ejemplo.txt
+python cliente.py ping 100.123.23.123:50051
 ```
 
-Por defecto usa el coordinador indicado en `config_local.py`; se puede cambiar con
-`--coordinador host:puerto`.
+Las acciones de la consola aparecen en la actividad con el usuario `consola`.
 
 ## API HTTP
 
@@ -195,56 +196,71 @@ La documentación completa, con modelos y ejemplos, está en **http://localhost:
 
 | Método | Ruta | Qué hace |
 | --- | --- | --- |
+| POST | `/api/cuentas` | Crea una cuenta |
+| POST / GET / DELETE | `/api/sesion` | Inicia, consulta o cierra la sesión |
 | GET | `/api/nodos` | Estado de cada nodo |
-| GET | `/api/archivos` | Archivos y sus réplicas |
+| GET | `/api/archivos` | Archivos, réplicas y factor de replicación |
 | POST | `/api/subir` | Sube un archivo a dos nodos |
 | GET | `/api/info/{nombre}` | Tamaño, fecha y SHA-256 en cada réplica |
 | GET | `/api/descargar/{nombre}` | Descarga desde la primera réplica disponible |
-| DELETE | `/api/archivos/{nombre}` | Elimina el archivo de todas sus réplicas |
+| DELETE | `/api/archivos/{nombre}` | Elimina el archivo de todas sus réplicas (solo administrador) |
+| GET | `/api/eventos` | Actividad en tiempo real (Server-Sent Events) |
 
-Los errores de gRPC se traducen a HTTP: `NOT_FOUND` → 404, `UNAVAILABLE` → 503,
-`DEADLINE_EXCEEDED` → 504.
+Sin sesión, la API responde 401. Los errores de gRPC se traducen a HTTP: `NOT_FOUND` → 404,
+`UNAVAILABLE` → 503 y `DEADLINE_EXCEEDED` → 504.
+
+## Configuración
+
+Los valores comunes están en `config.py`:
+
+| Valor | Por defecto | Significado |
+| --- | --- | --- |
+| `REPLICAS` | 2 | Copias de cada archivo |
+| `INTERVALO_SALUD` | 5 s | Tiempo entre pings del coordinador |
+| `ESPERA_RE_REPLICACION` | 30 s | Periodo de gracia antes de re-replicar |
+| `TAMANO_FRAGMENTO` | 64 KB | Tamaño de cada fragmento en el streaming |
+| `DURACION_SESION_HORAS` | 8 | Duración de una sesión iniciada |
 
 ## Pruebas realizadas
 
-1. **Comunicación:** registro de nodos, chequeo de salud y `ping` a un nodo.
-2. **Subida con réplicas e integridad:** un archivo de 1 MB en 16 fragmentos, con el mismo
-   SHA-256 en ambas réplicas y en la descarga.
-3. **Archivo inexistente:** `NOT_FOUND` en consola y 404 en la API.
-4. **Caída de un nodo:** el cliente recibe `UNAVAILABLE` y descarga desde la réplica.
-5. **Detección y recuperación:** el coordinador marca el nodo como caído y registra su regreso.
-6. **Confirmación de subida:** si un nodo falla durante la subida, solo se registra la réplica
-   que sí recibió el archivo.
-7. **Eliminación:** borra todas las réplicas disponibles y avisa si un nodo estaba caído.
-8. **Acceso remoto:** el panel funciona desde otro dispositivo por Tailscale.
+Las 23 evidencias están en `evidencias/`, descritas en `Registro_de_evidencias.pdf`:
 
-Las capturas están en la carpeta `evidencias/` y en el registro de evidencias del proyecto.
+| Evidencias | Qué demuestran |
+| --- | --- |
+| E01–E08 | Registro, chequeo de salud, subida con réplicas, `NOT_FOUND`, caída y conmutación a réplica |
+| E09–E13 | Panel web y API (respuestas 200 y 404) |
+| E14–E15 | Confirmación de subida y eliminación con un nodo caído |
+| E16–E18 | Acceso remoto por Tailscale, red lenta y nodo en un segundo computador |
+| E19–E22 | Re-replicación automática, resincronización e indicador de réplicas en riesgo |
+| E23 | Acceso desde el celular con un usuario sin permiso para eliminar |
 
 ## Problemas frecuentes
 
-| Síntoma | Causa y solución |
+| Síntoma | Solución |
 | --- | --- |
-| `no se encontró Python` | Python no está instalado o no está en el PATH: reinstalar marcando "Add python.exe to PATH" |
-| `No module named 'grpc'` | El entorno virtual no está activo: `.venv\Scripts\activate` |
+| `no se encontró Python` | Reinstalar Python marcando "Add python.exe to PATH" |
+| `No module named 'grpc'` | Activar el entorno virtual: `.venv\Scripts\activate` |
 | `ejecución de scripts deshabilitada` | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
-| Un cambio no tiene efecto | El archivo no está guardado (punto ● en la pestaña): Ctrl+S, o activar File → Auto Save |
-| `ERROR gRPC [UNAVAILABLE]` al usar el cliente | El coordinador no está corriendo |
-| El nodo remoto no se registra | Revisar que Tailscale esté conectado en los dos equipos, que `tailscale ping` responda y que exista la regla de firewall |
-| El panel en el celular dice "Reconectando…" | Conexión lenta (por ejemplo, datos móviles por relevo de Tailscale); el panel se recupera solo |
+| Un cambio no tiene efecto | El archivo no está guardado: Ctrl+S o File → Auto Save |
+| `ERROR gRPC [UNAVAILABLE]` en el cliente | El coordinador no está corriendo |
+| El nodo remoto no se registra | Revisar Tailscale en los dos equipos, `tailscale ping` y la regla de firewall |
+| El panel muestra "Reconectando…" | Conexión lenta; el panel conserva los datos y se recupera solo |
 
-## Limitaciones conocidas
+## Decisiones de diseño y limitaciones
 
-- El coordinador es un punto único de falla: si se detiene, no se pueden ubicar archivos nuevos.
-- La replicación la hace el cliente; un nodo que vuelve tras una caída no recupera los
-  archivos que se subieron mientras estaba apagado.
-- Si se elimina un archivo con un nodo caído, su copia en ese nodo queda huérfana.
-- Los canales gRPC no usan TLS; entre equipos, Tailscale cifra el tráfico con WireGuard.
+- **Coordinador único:** es un punto único de falla. Si se detiene, no se ubican archivos nuevos
+  ni se detectan fallas, aunque los nodos conservan sus archivos y el índice queda guardado.
+- **Sin TLS propio:** entre equipos, Tailscale ya cifra todo el tráfico con WireGuard, y los nodos
+  solo son alcanzables dentro de esa red privada.
+- **Copias de una en una:** la re-replicación copia un archivo a la vez para no saturar la red.
+- **Trabajo futuro:** pruebas automáticas con pytest, integración continua y un coordinador
+  replicado para eliminar el punto único de falla.
 
 ## Bibliotecas de terceros
 
 - [grpcio y grpcio-tools](https://grpc.io), licencia Apache 2.0.
-- [FastAPI](https://fastapi.tiangolo.com) y [Uvicorn](https://www.uvicorn.org), licencia MIT
-  y BSD.
+- [FastAPI](https://fastapi.tiangolo.com) y [Uvicorn](https://www.uvicorn.org), licencias MIT y BSD.
+- SQLite, incluido en Python.
 - [Tailscale](https://tailscale.com) para la red privada entre equipos.
 - Tipografías Unbounded e IBM Plex, desde Google Fonts.
 
