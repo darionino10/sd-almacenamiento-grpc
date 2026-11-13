@@ -214,8 +214,7 @@ forms.entrar.addEventListener("submit", (e) => {
   e.preventDefault();
   const d = new FormData(forms.entrar);
   enviar(forms.entrar, "/api/sesion", { usuario: d.get("usuario"), contrasena: d.get("contrasena") },
-         "Iniciar sesión", () => { location.href = "/"; });
-});
+         "Iniciar sesión", () => { location.replace("/"); });});
 
 // Usuario: solo letras sin tildes y números; se guarda en minúsculas
 const PATRON_USUARIO = /^[a-z]{4,40}([1-9][0-9]?|100)?$/;

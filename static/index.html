@@ -455,7 +455,7 @@ async function pedirJSON(url, opciones = {}, plazoMs = 10000) {
   const temporizador = setTimeout(() => control.abort(), plazoMs);
   try {
     const r = await fetch(url, { ...opciones, signal: control.signal });
-    if (r.status === 401) { location.href = "/entrar"; throw new Error("la sesión terminó"); }
+    if (r.status === 401) { location.replace("/entrar"); throw new Error("la sesión terminó"); }
     const datos = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(datos.detail || `HTTP ${r.status}`);
     return datos;
@@ -572,7 +572,7 @@ $("btnSubir").addEventListener("click", () => {
   xhr.onload = () => {
     let r = {};
     try { r = JSON.parse(xhr.responseText); } catch {}
-    if (xhr.status === 401) { location.href = "/entrar"; return; }
+    if (xhr.status === 401) { location.replace("/entrar"); return; }
     if (xhr.status >= 400) {
       avisar(`No se pudo subir: ${r.detail || "error " + xhr.status}`, "error");
     } else {
@@ -594,7 +594,7 @@ async function descargar(nombre, boton) {
   boton.disabled = true;
   try {
     const r = await fetch(`/api/descargar/${encodeURIComponent(nombre)}`);
-    if (r.status === 401) { location.href = "/entrar"; return; }
+    if (r.status === 401) { location.replace("/entrar"); return; }
     if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
     const fallidos = r.headers.get("X-Nodos-Fallidos");
     const blob = await r.blob();
@@ -691,9 +691,11 @@ async function cargarUsuario() {
 }
 $("btnSalir").addEventListener("click", async () => {
   await fetch("/api/sesion", { method: "DELETE" }).catch(() => {});
-  location.href = "/entrar";
+  location.replace("/entrar");
 });
- 
+// Si el navegador muestra la página desde su caché (botón Atrás), se recarga para que
+// el servidor vuelva a comprobar la sesión; sin sesión, redirige a /entrar.
+window.addEventListener("pageshow", (e) => { if (e.persisted) location.reload(); });
 cargarUsuario().then(conectarEventos);
 actualizar();
 setInterval(actualizar, 10000);   // respaldo: los cambios llegan al instante por los eventos

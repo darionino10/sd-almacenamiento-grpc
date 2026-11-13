@@ -52,6 +52,8 @@ app = FastAPI(
 cuentas.iniciar_bd()
 COOKIE = "sesion"
 CARPETA_STATIC = os.path.join(os.path.dirname(__file__), "static")
+# Las páginas no se guardan en caché: al volver con "Atrás" el navegador debe pedirlas de nuevo
+SIN_CACHE = {"Cache-Control": "no-store"}
 # Rutas de la API que se pueden usar sin haber iniciado sesión
 RUTAS_PUBLICAS = {"/api/cuentas", "/api/sesion"}
 
@@ -166,15 +168,13 @@ def coordinador():
 def inicio(request: Request):
     if not cuentas.usuario_de_sesion(request.cookies.get(COOKIE)):
         return RedirectResponse("/entrar")
-    return FileResponse(os.path.join(CARPETA_STATIC, "index.html"))
-
+    return FileResponse(os.path.join(CARPETA_STATIC, "index.html"), headers=SIN_CACHE)
 
 @app.get("/entrar", include_in_schema=False)
 def pagina_entrar(request: Request):
     if cuentas.usuario_de_sesion(request.cookies.get(COOKIE)):
         return RedirectResponse("/")
-    return FileResponse(os.path.join(CARPETA_STATIC, "entrar.html"))
-
+    return FileResponse(os.path.join(CARPETA_STATIC, "entrar.html"), headers=SIN_CACHE)
 
 @app.get("/favicon.ico", include_in_schema=False)
 @app.get("/apple-touch-icon.png", include_in_schema=False)
